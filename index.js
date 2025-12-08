@@ -7,7 +7,13 @@ require("dotenv").config();
 const cors = require("cors");
 
 // Middleware
-app.use(cors());
+// app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:5173", //  frontend url
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 const uri = process.env.MONGODB_URI;
@@ -28,6 +34,21 @@ async function run() {
     const publicLessonsCollection = database.collection("publicLessons");
     const privateLessonsCollection = database.collection("privateLessons");
     const usersCollection = database.collection("users");
+
+
+    // role middlewares
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.tokenEmail
+      const user = await usersCollection.findOne({ email })
+      if (user?.role !== 'admin')
+        return res
+          .status(403)
+          .send({ message: 'Admin only Actions!', role: user?.role })
+
+      next()
+    }
+
+
 
     //  ADD LESSON
     app.post("/add-lesson", async (req, res) => {
@@ -59,6 +80,15 @@ async function run() {
       const cursor = usersCollection.find();
       const result = await cursor.toArray();
       res.send(result);
+    });
+
+    // GET a user's role
+    app.get("/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      //   res.send({ role: user?.role });
+      res.send({ role: user?.role || "user" });
     });
 
     // GET public lessons
