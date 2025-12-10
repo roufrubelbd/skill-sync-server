@@ -7,40 +7,6 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 require("dotenv").config();
 const cors = require("cors");
 
-// Stripe webhook handler
-const stripeWebhookHandler = async (req, res) => {
-  const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-  const sig = req.headers["stripe-signature"];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      // Update MongoDB user as Premium - requires usersCollection from db context
-      const client = new MongoClient(process.env.MONGODB_URI);
-      //  await client.connect();
-      const usersCollection = client.db("skillSync").collection("users");
-
-      await usersCollection.updateOne(
-        { email: session.customer_email },
-        { $set: { isPremium: true } }
-      );
-
-      console.log(" User upgraded to Premium:", session.customer_email);
-    }
-
-    res.json({ received: true });
-  } catch (error) {
-    res.status(400).send(`Webhook Error: ${error.message}`);
-  }
-};
-
 // Middleware
 // app.use(cors());
 app.use(
@@ -49,12 +15,6 @@ app.use(
 
     credentials: true,
   })
-);
-
-app.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  stripeWebhookHandler
 );
 
 app.use(express.json());
@@ -117,6 +77,43 @@ async function run() {
 
     // ------ stripe set up start -------
 
+    app.post(
+      "/webhook",
+      express.raw({ type: "application/json" }),
+      async (req, res) => {
+        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+        const sig = req.headers["stripe-signature"];
+
+        let event;
+
+        try {
+          event = stripe.webhooks.constructEvent(
+            req.body,
+            sig,
+            process.env.STRIPE_WEBHOOK_SECRET
+          );
+        } catch (err) {
+          console.error(" Webhook signature error:", err.message);
+          return res.status(400).send(`Webhook Error: ${err.message}`);
+        }
+
+        if (event.type === "checkout.session.completed") {
+          const session = event.data.object;
+
+          console.log(" Payment Success for:", session.customer_email);
+
+          const result = await usersCollection.updateOne(
+            { email: session.customer_email },
+            { $set: { isPremium: true } }
+          );
+
+          console.log(" MongoDB Update Result:", result.modifiedCount);
+        }
+
+        res.json({ received: true });
+      }
+    );
+
     // Stripe Setup
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
@@ -140,12 +137,8 @@ async function run() {
             quantity: 1,
           },
         ],
-        success_url:
-          "http://localhost:5173/payment/success" ||
-          "https://skill-sync-learning.web.app/payment/success",
-        cancel_url:
-          "http://localhost:5173/payment/cancel" ||
-          "https://skill-sync-learning.web.app/payment/cancel",
+        success_url: `${process.env.CLIENT_URL}/payment/success`,
+        cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
       });
 
       res.send({ url: session.url });
