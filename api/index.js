@@ -23,7 +23,16 @@ const stripeWebhookHandler = async (req, res) => {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       // Update MongoDB user as Premium - requires usersCollection from db context
-      // Note: This will need to be refactored to access usersCollection
+         const client = new MongoClient(process.env.MONGODB_URI);
+      //  await client.connect();
+      const usersCollection = client.db("skillSync").collection("users");
+
+      await usersCollection.updateOne(
+        { email: session.customer_email },
+        { $set: { isPremium: true } }
+      );
+
+      console.log(" User upgraded to Premium:", session.customer_email);
     }
 
     res.json({ received: true });
