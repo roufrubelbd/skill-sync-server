@@ -77,8 +77,8 @@ async function run() {
           line_items: [
             {
               price_data: {
-                currency: "bdt",
-                unit_amount: 150000, // ৳1500
+                currency: "usd",
+                unit_amount: 1500, // $15
                 product_data: {
                   name: "SkillSync Premium Lifetime",
                 },
@@ -147,6 +147,31 @@ async function run() {
         res.json({ received: true });
       }
     );
+
+    app.post("/payment-success", async (req, res) => {
+      const { sessionId } = req.body;
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      const user = await usersCollection.findOne({
+        email: session.metadata.userEmail,
+      });
+
+      if (session.status === "complete" && user) {
+        // update data in db
+        const result = await usersCollection.updateOne(
+          {
+            email: session.metadata.userEmail,
+          },
+          { $set: { isPremium: true } }
+        );
+        return res.send({
+          isPremium: true,
+        });
+      }
+      res.send({
+        isPremium: false,
+      });
+      res.send(result);
+    });
 
     // ------ stripe set up end -------
 
