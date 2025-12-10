@@ -76,43 +76,6 @@ async function run() {
 
     // ------------------------- stripe set up start -------------------------
 
-    app.post(
-      "/webhook",
-      express.raw({ type: "application/json" }),
-      async (req, res) => {
-        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-        const sig = req.headers["stripe-signature"];
-
-        let event;
-
-        try {
-          event = stripe.webhooks.constructEvent(
-            req.body,
-            sig,
-            process.env.STRIPE_WEBHOOK_SECRET
-          );
-        } catch (err) {
-          console.error(" Webhook signature error:", err.message);
-          return res.status(400).send(`Webhook Error: ${err.message}`);
-        }
-
-        if (event.type === "checkout.session.completed") {
-          const session = event.data.object;
-
-          console.log(" Payment Success for:", session.customer_email);
-
-          const result = await usersCollection.updateOne(
-            { email: session.customer_email },
-            { $set: { isPremium: true } }
-          );
-
-          console.log(" MongoDB Update Result:", result.modifiedCount);
-        }
-
-        res.json({ received: true });
-      }
-    );
-
     // CREATE CHECKOUT SESSION
     app.post("/create-checkout-session", async (req, res) => {
       try {
@@ -150,6 +113,43 @@ async function run() {
         res.status(500).send({ message: error.message });
       }
     });
+
+    app.post(
+      "/webhook",
+      express.raw({ type: "application/json" }),
+      async (req, res) => {
+        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+        const sig = req.headers["stripe-signature"];
+
+        let event;
+
+        try {
+          event = stripe.webhooks.constructEvent(
+            req.body,
+            sig,
+            process.env.STRIPE_WEBHOOK_SECRET
+          );
+        } catch (err) {
+          console.error(" Webhook signature error:", err.message);
+          return res.status(400).send(`Webhook Error: ${err.message}`);
+        }
+
+        if (event.type === "checkout.session.completed") {
+          const session = event.data.object;
+
+          console.log(" Payment Success for:", session.customer_email);
+
+          const result = await usersCollection.updateOne(
+            { email: session.customer_email },
+            { $set: { isPremium: true } }
+          );
+
+          console.log(" MongoDB Update Result:", result.modifiedCount);
+        }
+
+        res.json({ received: true });
+      }
+    );
 
     // ------ stripe set up end -------
 
