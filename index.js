@@ -1,3 +1,4 @@
+const { ObjectId } = require("mongodb");
 const express = require("express");
 const app = express();
 const port = process.env.PORT || 5000;
@@ -34,23 +35,21 @@ async function run() {
     const publicLessonsCollection = database.collection("publicLessons");
     const privateLessonsCollection = database.collection("privateLessons");
     const usersCollection = database.collection("users");
-
+    const reportsCollection = database.collection("reports");
 
     // role middlewares
     const verifyAdmin = async (req, res, next) => {
-      const email = req.tokenEmail
-      const user = await usersCollection.findOne({ email })
-      if (user?.role !== 'admin')
+      const email = req.tokenEmail;
+      const user = await usersCollection.findOne({ email });
+      if (user?.role !== "admin")
         return res
           .status(403)
-          .send({ message: 'Admin only Actions!', role: user?.role })
+          .send({ message: "Admin only Actions!", role: user?.role });
 
-      next()
-    }
+      next();
+    };
 
-
-
-    //  ADD LESSON
+    // ADD a public lesson
     app.post("/add-lesson", async (req, res) => {
       const addLesson = req.body;
       const result = await publicLessonsCollection.insertOne(addLesson);
@@ -74,6 +73,163 @@ async function run() {
       res.send(result);
     });
 
+    // GET public lessons
+    app.get("/public-lessons", async (req, res) => {
+      //   console.log(" Public Lessons API Hit");
+      const cursor = publicLessonsCollection.find();
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
+    // ------------ START LESSON DETAILS page relevant apis ------------
+
+    //  POST COMMENT
+    app.post("/public-lessons/:id/comment", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const payload = req.body;
+
+        const newComment = {
+          ...payload,
+          timestamp: new Date(),
+        };
+
+        const result = await publicLessonsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $push: { comments: newComment } }
+        );
+
+        res.send({ success: true });
+      } catch (error) {
+        res.status(500).send({ message: "Failed to post comment", error });
+      }
+    });
+
+    //  GET COMMENTS
+    app.get("/public-lessons/:id/comments", async (req, res) => {
+      const lesson = await publicLessonsCollection.findOne({
+        _id: new ObjectId(req.params.id),
+      });
+
+      res.send(lesson?.comments || []);
+    });
+
+    // Toggle Like
+    app.patch("/details/like/:id", async (req, res) => {
+      const { email } = req.body;
+      const lesson = await publicLessonsCollection.findOne({
+        _id: new ObjectId(req.params.id),
+      });
+
+      const likesArray = lesson?.likes || [];
+
+      const alreadyLiked = likesArray.includes(email);
+
+      const update = alreadyLiked
+        ? { $pull: { likes: email } }
+        : { $addToSet: { likes: email } };
+
+      const result = await publicLessonsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        update
+      );
+
+      res.send({ success: true, liked: !alreadyLiked });
+    });
+
+    //  TOGGLE FAVORITE
+    app.patch("/details/favorite/:id", async (req, res) => {
+      try {
+        const { email } = req.body;
+
+        const lesson = await publicLessonsCollection.findOne({
+          _id: new ObjectId(req.params.id),
+        });
+
+        const favoriteArray = lesson?.favorites || [];
+        const alreadySaved = favoriteArray.includes(email);
+
+        const update = alreadySaved
+          ? { $pull: { favorites: email } }
+          : { $addToSet: { favorites: email } };
+
+        await publicLessonsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          update
+        );
+
+        res.send({ success: true, saved: !alreadySaved });
+      } catch (error) {
+        res.status(500).send({ message: "Favorite failed", error });
+      }
+    });
+
+    // Get Single Lesson
+    app.get("/public-lessons/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid lesson ID" });
+        }
+
+        const result = await publicLessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!result) {
+          return res.status(404).send({ message: "Lesson not found" });
+        }
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Server error", error });
+      }
+    });
+
+    // Report Lesson
+    app.post("/lesson-reports", async (req, res) => {
+      const payload = req.body;
+      const result = await reportsCollection.insertOne(payload);
+      res.send(result);
+    });
+
+    // Get Similar Lessons
+    app.get("/similar-lessons/:category/:tone", async (req, res) => {
+      const { category, tone } = req.params;
+      const result = await publicLessonsCollection
+        .find({
+          $or: [{ category }, { tone }],
+        })
+        .limit(6)
+        .toArray();
+      res.send(result);
+    });
+
+    // ------------ END LESSON DETAILS page relevant apis ------------
+
+    //  GET SINGLE LESSON
+    app.get("/update/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await publicLessonsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
+    //  UPDATE LESSON
+    app.patch("/update/:id", async (req, res) => {
+      const id = req.params.id;
+      const updatedLesson = req.body;
+
+      const result = await publicLessonsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updatedLesson }
+      );
+
+      res.send(result);
+    });
+
     // GET user
     app.get("/users", async (req, res) => {
       console.log(" Users API Hit");
@@ -89,14 +245,6 @@ async function run() {
       const user = await usersCollection.findOne(query);
       //   res.send({ role: user?.role });
       res.send({ role: user?.role || "user" });
-    });
-
-    // GET public lessons
-    app.get("/public-lessons", async (req, res) => {
-      //   console.log(" Public Lessons API Hit");
-      const cursor = publicLessonsCollection.find();
-      const result = await cursor.toArray();
-      res.send(result);
     });
 
     // Send a ping to confirm a successful connection
