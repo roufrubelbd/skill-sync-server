@@ -109,68 +109,44 @@ async function run() {
     });
 
     // ✅ STRIPE WEBHOOK (FIXED & WORKING)
-    // app.post(
-    //   "/webhook",
-    //   express.raw({ type: "application/json" }),
-    //   async (req, res) => {
-    //     const sig = req.headers["stripe-signature"];
+    app.post(
+      "/webhook",
+      express.raw({ type: "application/json" }),
+      async (req, res) => {
+        const sig = req.headers["stripe-signature"];
 
-    //     let event;
+        let event;
 
-    //     try {
-    //       event = stripe.webhooks.constructEvent(
-    //         req.body,
-    //         sig,
-    //         process.env.STRIPE_WEBHOOK_SECRET
-    //       );
-    //     } catch (err) {
-    //       console.error("Webhook signature error:", err.message);
-    //       return res.status(400).send(`Webhook Error: ${err.message}`);
-    //     }
+        try {
+          event = stripe.webhooks.constructEvent(
+            req.body,
+            sig,
+            process.env.STRIPE_WEBHOOK_SECRET
+          );
+        } catch (err) {
+          console.error("Webhook signature error:", err.message);
+          return res.status(400).send(`Webhook Error: ${err.message}`);
+        }
 
-    //     if (event.type === "checkout.session.completed") {
-    //       const session = event.data.object;
+        if (event.type === "checkout.session.completed") {
+          const session = event.data.object;
 
-    //       const userEmail =
-    //         session.metadata?.userEmail || session.customer_email;
+          const userEmail =
+            session.metadata?.userEmail || session.customer_email;
 
-    //       console.log("✅ Payment Success for:", userEmail);
+          console.log("✅ Payment Success for:", userEmail);
 
-    //       const result = await usersCollection.updateOne(
-    //         { email: userEmail },
-    //         { $set: { isPremium: true } }
-    //       );
+          const result = await usersCollection.updateOne(
+            { email: userEmail },
+            { $set: { isPremium: true } }
+          );
 
-    //       console.log("✅ MongoDB Update Result:", result.modifiedCount);
-    //     }
+          console.log("✅ MongoDB Update Result:", result.modifiedCount);
+        }
 
-    //     res.json({ received: true });
-    //   }
-    // );
-
-    app.post("/payment-success", async (req, res) => {
-      const { sessionId } = req.body;
-      const session = await stripe.checkout.sessions.retrieve(sessionId);
-      const user = await usersCollection.findOne({
-        email: session.metadata.userEmail,
-      });
-      if (session.status === "complete" && user) {
-        // update data in db
-        const result = await usersCollection.updateOne(
-          {
-            email: session.metadata.userEmail,
-          },
-          { $set: { isPremium: true } }
-        );
-        return res.send({
-          isPremium: true,
-        });
+        res.json({ received: true });
       }
-      res.send({
-        isPremium: false,
-      });
-      res.send(result);
-    });
+    );
 
     // ------ stripe set up end -------
 
