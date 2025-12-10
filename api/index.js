@@ -11,7 +11,8 @@ const cors = require("cors");
 // app.use(cors());
 app.use(
   cors({
-    origin: "http://localhost:5173", //  frontend url
+    origin: ["http://localhost:5173", "https://your-frontend.vercel.app"], //  frontend url
+
     credentials: true,
   })
 );
@@ -29,7 +30,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
     const database = client.db("skillSync");
     const publicLessonsCollection = database.collection("publicLessons");
@@ -76,64 +77,61 @@ async function run() {
     // ------ stripe set up start -------
 
     // Stripe Setup
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
-// CREATE CHECKOUT SESSION
-app.post("/create-checkout-session", async (req, res) => {
-  const { email } = req.body;
+    // CREATE CHECKOUT SESSION
+    app.post("/create-checkout-session", async (req, res) => {
+      const { email } = req.body;
 
-  const session = await stripe.checkout.sessions.create({
-    payment_method_types: ["card"],
-    mode: "payment",
-    customer_email: email,
-    line_items: [
-      {
-        price_data: {
-          currency: "bdt",
-          product_data: {
-            name: "Premium Lifetime Access",
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        mode: "payment",
+        customer_email: email,
+        line_items: [
+          {
+            price_data: {
+              currency: "bdt",
+              product_data: {
+                name: "Premium Lifetime Access",
+              },
+              unit_amount: 150000, // ৳1500 × 100
+            },
+            quantity: 1,
           },
-          unit_amount: 150000, // ৳1500 × 100
-        },
-        quantity: 1,
-      },
-    ],
-    success_url: "http://localhost:5173/payment/success",
-    cancel_url: "http://localhost:5173/payment/cancel",
-  });
+        ],
+        success_url: "http://localhost:5173/payment/success",
+        cancel_url: "http://localhost:5173/payment/cancel",
+      });
 
-  res.send({ url: session.url });
-});
+      res.send({ url: session.url });
+    });
 
+    app.post(
+      "/webhook",
+      express.raw({ type: "application/json" }),
+      async (req, res) => {
+        const sig = req.headers["stripe-signature"];
+        let event;
 
+        event = stripe.webhooks.constructEvent(
+          req.body,
+          sig,
+          process.env.STRIPE_WEBHOOK_SECRET
+        );
 
-app.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig = req.headers["stripe-signature"];
-    let event;
+        if (event.type === "checkout.session.completed") {
+          const session = event.data.object;
 
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
+          //  Update MongoDB user as Premium
+          await usersCollection.updateOne(
+            { email: session.customer_email },
+            { $set: { isPremium: true } }
+          );
+        }
+
+        res.json({ received: true });
+      }
     );
-
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-
-      //  Update MongoDB user as Premium
-      await usersCollection.updateOne(
-        { email: session.customer_email },
-        { $set: { isPremium: true } }
-      );
-    }
-
-    res.json({ received: true });
-  }
-);
-
 
     // ------ stripe set up end -------
 
@@ -312,12 +310,12 @@ app.post(
     });
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
 
-    console.log(uri);
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // console.log(uri);
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
     // await client.close();
   }
