@@ -23,7 +23,7 @@ const stripeWebhookHandler = async (req, res) => {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       // Update MongoDB user as Premium - requires usersCollection from db context
-         const client = new MongoClient(process.env.MONGODB_URI);
+      const client = new MongoClient(process.env.MONGODB_URI);
       //  await client.connect();
       const usersCollection = client.db("skillSync").collection("users");
 
@@ -321,10 +321,12 @@ async function run() {
     // GET a user's role
     app.get("/users/:email/role", async (req, res) => {
       const email = req.params.email;
-      const query = { email };
-      const user = await usersCollection.findOne(query);
-      //   res.send({ role: user?.role });
-      res.send({ role: user?.role || "user" });
+      const user = await usersCollection.findOne({ email });
+
+      res.send({
+        role: user?.role || "user",
+        isPremium: user?.isPremium || false,
+      });
     });
 
     // Send a ping to confirm a successful connection
