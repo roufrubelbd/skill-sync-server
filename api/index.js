@@ -16,7 +16,6 @@ app.use(
   })
 );
 
-
 app.use(express.json());
 
 const uri = process.env.MONGODB_URI;
@@ -114,34 +113,42 @@ async function run() {
       }
     );
 
-    // Stripe Setup
-    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-
     // CREATE CHECKOUT SESSION
     app.post("/create-checkout-session", async (req, res) => {
-      const { email } = req.body;
+      try {
+        const { email } = req.body;
 
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        mode: "payment",
-        customer_email: email,
-        line_items: [
-          {
-            price_data: {
-              currency: "bdt",
-              product_data: {
-                name: "Premium Lifetime Access",
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+
+        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+        const session = await stripe.checkout.sessions.create({
+          payment_method_types: ["card"],
+          mode: "payment",
+          customer_email: email,
+          line_items: [
+            {
+              price_data: {
+                currency: "bdt",
+                product_data: {
+                  name: "Premium Lifetime Access",
+                },
+                unit_amount: 150000, // ৳1500
               },
-              unit_amount: 150000, // ৳1500 × 100
+              quantity: 1,
             },
-            quantity: 1,
-          },
-        ],
-        success_url: `${process.env.CLIENT_URL}/payment/success`,
-        cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
-      });
+          ],
+          success_url: `${process.env.CLIENT_URL}/payment/success`,
+          cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+        });
 
-      res.send({ url: session.url });
+        res.send({ url: session.url });
+      } catch (error) {
+        console.error(" Stripe Error:", error.message);
+        res.status(500).send({ message: error.message });
+      }
     });
 
     // ------ stripe set up end -------
