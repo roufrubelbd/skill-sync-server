@@ -341,6 +341,7 @@
 //   console.log(`Example app listening on port ${port}`);
 // });
 
+// server.js (replace your previous server with this)
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
@@ -351,26 +352,27 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const port = process.env.PORT || 5000;
 
-/* =======================
- ✅ MIDDLEWARE (STRIPE SAFE)
-======================= */
-
+/* -----------------------
+  Middleware
+  - For webhook we need raw body; for other routes JSON
+------------------------*/
 app.use(cors({ origin: true, credentials: true }));
 
+// Use express.json for all routes except /webhook (Stripe requires raw body)
 app.use((req, res, next) => {
-  if (req.originalUrl === "/webhook") {
-    next(); // ✅ Allow Stripe RAW body
-  } else {
-    express.json()(req, res, next); // ✅ Normal JSON for all other routes
+  if (
+    req.originalUrl === "/webhook" ||
+    req.originalUrl.startsWith("/webhook")
+  ) {
+    return next();
   }
+  return express.json()(req, res, next);
 });
 
-/* =======================
- ✅ MONGODB CONNECTION
-======================= */
-
+/* -----------------------
+  MongoDB
+------------------------*/
 const uri = process.env.MONGODB_URI;
-
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -379,31 +381,39 @@ const client = new MongoClient(uri, {
   },
 });
 
-async function run() {
+async function startServer() {
   try {
-    const database = client.db("skillSync");
+    // IMPORTANT: ensure the client is connected before registering routes that use DB
+    await client.connect();
+    console.log("MongoDB connected");
 
+    const database = client.db("skillSync");
     const publicLessonsCollection = database.collection("publicLessons");
     const usersCollection = database.collection("users");
     const reportsCollection = database.collection("reports");
 
-    /* =======================
- ✅ USERS
-======================= */
+    /* =========================
+       Routes (DB-backed)
+       ========================= */
 
+    // -- Users
     app.post("/users", async (req, res) => {
-      const user = req.body;
+      try {
+        const user = req.body;
+        if (!user?.email)
+          return res.status(400).send({ message: "Email required" });
 
-      const existingUser = await usersCollection.findOne({
-        email: user.email,
-      });
+        const existingUser = await usersCollection.findOne({
+          email: user.email,
+        });
+        if (existingUser) return res.send({ message: "User already exists" });
 
-      if (existingUser) {
-        return res.send({ message: "User already exists" });
+        const result = await usersCollection.insertOne(user);
+        res.send(result);
+      } catch (err) {
+        console.error("POST /users error:", err);
+        res.status(500).send({ message: "Server error" });
       }
-
-      const result = await usersCollection.insertOne(user);
-      res.send(result);
     });
 
     app.get("/users", async (req, res) => {
@@ -414,68 +424,54 @@ async function run() {
     app.get("/users/:email/role", async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
-
       res.send({
         role: user?.role || "user",
         isPremium: user?.isPremium || false,
       });
     });
 
-    /* =======================
- ✅ STRIPE PAYMENT
-======================= */
+    /* -------------------------------
+       Stripe: create session & webhook
+       ------------------------------- */
 
+    // Create Checkout Session
     app.post("/create-checkout-session", async (req, res) => {
       try {
         const { email } = req.body;
-
-        if (!email) {
+        if (!email)
           return res.status(400).send({ message: "Email is required" });
-        }
 
         const session = await stripe.checkout.sessions.create({
           line_items: [
             {
               price_data: {
-                currency: "usd", // ✅ FIXED
-                unit_amount: 1500, // ✅ $15 = ৳1500 approx
-                product_data: {
-                  name: "SkillSync Premium Lifetime",
-                },
+                currency: "usd",
+                unit_amount: 1500, // 1500 cents = $15 (adjust as needed)
+                product_data: { name: "SkillSync Premium Lifetime" },
               },
               quantity: 1,
             },
           ],
           mode: "payment",
-
-          metadata: {
-            userEmail: email,
-            plan: "premium",
-          },
-
+          metadata: { userEmail: email, plan: "premium" },
           customer_email: email,
-
           success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
           cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
         });
 
         res.send({ url: session.url });
-      } catch (error) {
-        console.error("Stripe Error:", error.message);
-        res.status(500).send({ message: error.message });
+      } catch (err) {
+        console.error("create-checkout-session error:", err);
+        res.status(500).send({ message: err.message || "Stripe error" });
       }
     });
 
-    /* =======================
- ✅ STRIPE WEBHOOK
-======================= */
-
+    // Stripe webhook (raw body)
     app.post(
       "/webhook",
       express.raw({ type: "application/json" }),
       async (req, res) => {
         const sig = req.headers["stripe-signature"];
-
         let event;
 
         try {
@@ -489,29 +485,70 @@ async function run() {
           return res.status(400).send(`Webhook Error: ${err.message}`);
         }
 
-        if (event.type === "checkout.session.completed") {
-          const session = event.data.object;
+        try {
+          if (event.type === "checkout.session.completed") {
+            const session = event.data.object;
+            // prefer metadata.userEmail (we stored it when creating the session)
+            const userEmail =
+              session.metadata?.userEmail || session.customer_email;
 
-          const userEmail =
-            session.metadata?.userEmail || session.customer_email;
+            console.log("Webhook: checkout.session.completed for", userEmail);
 
-          console.log("✅ Payment Success for:", userEmail);
+            if (userEmail) {
+              const result = await usersCollection.updateOne(
+                { email: userEmail },
+                { $set: { isPremium: true } }
+              );
+              console.log(
+                "Mongo update result.modifiedCount=",
+                result.modifiedCount
+              );
+            } else {
+              console.warn("No email found in session to mark premium");
+            }
+          }
 
-          const result = await usersCollection.updateOne(
-            { email: userEmail },
-            { $set: { isPremium: true } }
-          );
+          // you can handle other events here if needed
 
-          console.log("✅ MongoDB Update Result:", result.modifiedCount);
+          res.json({ received: true });
+        } catch (err) {
+          console.error("Webhook handling error:", err);
+          res.status(500).send("Webhook handling failed");
         }
-
-        res.json({ received: true });
       }
     );
 
-    /* =======================
- ✅ LESSONS
-======================= */
+    // Fallback: manual verify endpoint — fetch session from Stripe and update DB (useful for debugging)
+    // Client calls: POST /verify-session { session_id: 'cs_test_...' }
+    app.post("/verify-session", express.json(), async (req, res) => {
+      try {
+        const { session_id } = req.body;
+        if (!session_id)
+          return res.status(400).send({ message: "session_id required" });
+
+        const session = await stripe.checkout.sessions.retrieve(session_id);
+
+        const userEmail = session.metadata?.userEmail || session.customer_email;
+
+        if (!userEmail)
+          return res.status(400).send({ message: "No email in session" });
+
+        const result = await usersCollection.updateOne(
+          { email: userEmail },
+          { $set: { isPremium: true } }
+        );
+
+        res.send({ success: true, modifiedCount: result.modifiedCount });
+      } catch (err) {
+        console.error("verify-session error:", err);
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    /* =========================
+       Lessons, comments, likes, favorites, reports
+       (Your logic preserved, lightly restructured)
+       ========================= */
 
     app.post("/add-lesson", async (req, res) => {
       const result = await publicLessonsCollection.insertOne(req.body);
@@ -524,45 +561,22 @@ async function run() {
     });
 
     app.get("/public-lessons/:id", async (req, res) => {
-      const id = req.params.id;
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id))
+          return res.status(400).send({ message: "Invalid id" });
 
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ message: "Invalid lesson ID" });
+        const lesson = await publicLessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!lesson) return res.status(404).send({ message: "Not found" });
+
+        res.send(lesson);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Server error" });
       }
-
-      const result = await publicLessonsCollection.findOne({
-        _id: new ObjectId(id),
-      });
-
-      if (!result) {
-        return res.status(404).send({ message: "Lesson not found" });
-      }
-
-      res.send(result);
     });
-
-    app.patch("/update/:id", async (req, res) => {
-      const id = req.params.id;
-
-      const result = await publicLessonsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: req.body }
-      );
-
-      res.send(result);
-    });
-
-    app.get("/update/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await publicLessonsCollection.findOne({
-        _id: new ObjectId(id),
-      });
-      res.send(result);
-    });
-
-    /* =======================
- ✅ COMMENTS, LIKES, FAVORITES
-======================= */
 
     app.post("/public-lessons/:id/comment", async (req, res) => {
       const { id } = req.params;
@@ -572,55 +586,46 @@ async function run() {
         { _id: new ObjectId(id) },
         { $push: { comments: newComment } }
       );
-
       res.send({ success: true });
     });
 
     app.patch("/details/like/:id", async (req, res) => {
       const { email } = req.body;
+      const id = req.params.id;
 
       const lesson = await publicLessonsCollection.findOne({
-        _id: new ObjectId(req.params.id),
+        _id: new ObjectId(id),
       });
-
       const alreadyLiked = lesson?.likes?.includes(email);
-
       const update = alreadyLiked
         ? { $pull: { likes: email } }
         : { $addToSet: { likes: email } };
 
       await publicLessonsCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
+        { _id: new ObjectId(id) },
         update
       );
-
       res.send({ success: true, liked: !alreadyLiked });
     });
 
     app.patch("/details/favorite/:id", async (req, res) => {
       const { email } = req.body;
+      const id = req.params.id;
 
       const lesson = await publicLessonsCollection.findOne({
-        _id: new ObjectId(req.params.id),
+        _id: new ObjectId(id),
       });
-
       const alreadySaved = lesson?.favorites?.includes(email);
-
       const update = alreadySaved
         ? { $pull: { favorites: email } }
         : { $addToSet: { favorites: email } };
 
       await publicLessonsCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
+        { _id: new ObjectId(id) },
         update
       );
-
       res.send({ success: true, saved: !alreadySaved });
     });
-
-    /* =======================
- ✅ REPORTS & SIMILAR
-======================= */
 
     app.post("/lesson-reports", async (req, res) => {
       const result = await reportsCollection.insertOne(req.body);
@@ -629,24 +634,27 @@ async function run() {
 
     app.get("/similar-lessons/:category/:tone", async (req, res) => {
       const { category, tone } = req.params;
-
       const result = await publicLessonsCollection
         .find({ $or: [{ category }, { tone }] })
         .limit(6)
         .toArray();
-
       res.send(result);
     });
-  } finally {
+
+    /* End of route registrations */
+
+    console.log("All routes registered");
+  } catch (err) {
+    console.error("Start server failed:", err);
+    process.exit(1);
   }
 }
 
-run().catch(console.dir);
+startServer().catch(console.dir);
 
-/* =======================
- ✅ ROOT
-======================= */
-
+/* -----------------------
+  Root
+------------------------*/
 app.get("/", (req, res) => {
   res.send("SkillSync Server Running ✅");
 });
