@@ -1,4 +1,5 @@
 const { ObjectId } = require("mongodb");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const express = require("express");
 const app = express();
 const port = process.env.PORT || 5000;
@@ -7,49 +8,9 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 require("dotenv").config();
 const cors = require("cors");
 
-
-// Stripe webhook handler
-app.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-    const sig = req.headers["stripe-signature"];
-
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (err) {
-      console.error(" Webhook signature error:", err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-
-      console.log(" Payment Success for:", session.customer_email);
-
-      const result = await usersCollection.updateOne(
-        { email: session.customer_email },
-        { $set: { isPremium: true } }
-      );
-
-      console.log("✅ MongoDB Update Result:", result.modifiedCount);
-    }
-
-    res.json({ received: true });
-  }
-);
-
 //   middleware
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
-
 
 const uri = process.env.MONGODB_URI;
 
@@ -70,18 +31,6 @@ async function run() {
     // const privateLessonsCollection = database.collection("privateLessons");
     const usersCollection = database.collection("users");
     const reportsCollection = database.collection("reports");
-
-    // role middlewares
-    const verifyAdmin = async (req, res, next) => {
-      const email = req.tokenEmail;
-      const user = await usersCollection.findOne({ email });
-      if (user?.role !== "admin")
-        return res
-          .status(403)
-          .send({ message: "Admin only Actions!", role: user?.role });
-
-      next();
-    };
 
     // ADD a public lesson
     app.post("/add-lesson", async (req, res) => {
@@ -118,71 +67,80 @@ async function run() {
           return res.status(400).send({ message: "Email is required" });
         }
 
-        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-
         const session = await stripe.checkout.sessions.create({
-          payment_method_types: ["card"],
-          mode: "payment",
-          customer_email: email,
           line_items: [
             {
               price_data: {
                 currency: "bdt",
-                product_data: {
-                  name: "Premium Lifetime Access",
-                },
                 unit_amount: 150000, // ৳1500
+                product_data: {
+                  name: "SkillSync Premium Lifetime",
+                },
               },
               quantity: 1,
             },
           ],
-          success_url: `${process.env.CLIENT_URL}/payment/success`,
+          mode: "payment",
+
+          // ✅ This is IMPORTANT (used by webhook)
+          metadata: {
+            userEmail: email,
+            plan: "premium",
+          },
+
+          customer_email: email,
+
+          // ✅ session_id added like your sample
+          success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
           cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
         });
 
         res.send({ url: session.url });
       } catch (error) {
-        console.error(" Stripe Error:", error.message);
+        console.error("Stripe Error:", error.message);
         res.status(500).send({ message: error.message });
       }
     });
 
-    // app.post(
-    //   "/webhook",
-    //   express.raw({ type: "application/json" }),
-    //   async (req, res) => {
-    //     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-    //     const sig = req.headers["stripe-signature"];
+    // ✅ STRIPE WEBHOOK (FIXED & WORKING)
+    app.post(
+      "/webhook",
+      express.raw({ type: "application/json" }),
+      async (req, res) => {
+        const sig = req.headers["stripe-signature"];
 
-    //     let event;
+        let event;
 
-    //     try {
-    //       event = stripe.webhooks.constructEvent(
-    //         req.body,
-    //         sig,
-    //         process.env.STRIPE_WEBHOOK_SECRET
-    //       );
-    //     } catch (err) {
-    //       console.error(" Webhook signature error:", err.message);
-    //       return res.status(400).send(`Webhook Error: ${err.message}`);
-    //     }
+        try {
+          event = stripe.webhooks.constructEvent(
+            req.body,
+            sig,
+            process.env.STRIPE_WEBHOOK_SECRET
+          );
+        } catch (err) {
+          console.error("Webhook signature error:", err.message);
+          return res.status(400).send(`Webhook Error: ${err.message}`);
+        }
 
-    //     if (event.type === "checkout.session.completed") {
-    //       const session = event.data.object;
+        if (event.type === "checkout.session.completed") {
+          const session = event.data.object;
 
-    //       console.log(" Payment Success for:", session.customer_email);
+          const userEmail =
+            session.metadata?.userEmail || session.customer_email;
 
-    //       const result = await usersCollection.updateOne(
-    //         { email: session.customer_email },
-    //         { $set: { isPremium: true } }
-    //       );
+          console.log("✅ Payment Success for:", userEmail);
 
-    //       console.log(" MongoDB Update Result:", result.modifiedCount);
-    //     }
+          const result = await usersCollection.updateOne(
+            { email: userEmail },
+            { $set: { isPremium: true } }
+          );
 
-    //     res.json({ received: true });
-    //   }
-    // );
+          console.log("✅ MongoDB Update Result:", result.modifiedCount);
+        }
+
+        res.json({ received: true });
+      }
+    );
 
     // ------ stripe set up end -------
 
