@@ -7,16 +7,49 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 require("dotenv").config();
 const cors = require("cors");
 
-// Middleware
-// app.use(cors());
-app.use(
-  cors({
-    origin: true,
-    credentials: true,
-  })
+
+// Stripe webhook handler
+app.post(
+  "/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+    const sig = req.headers["stripe-signature"];
+
+    let event;
+
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error(" Webhook signature error:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+
+      console.log(" Payment Success for:", session.customer_email);
+
+      const result = await usersCollection.updateOne(
+        { email: session.customer_email },
+        { $set: { isPremium: true } }
+      );
+
+      console.log("✅ MongoDB Update Result:", result.modifiedCount);
+    }
+
+    res.json({ received: true });
+  }
 );
 
+//   middleware
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
+
 
 const uri = process.env.MONGODB_URI;
 
@@ -114,42 +147,42 @@ async function run() {
       }
     });
 
-    app.post(
-      "/webhook",
-      express.raw({ type: "application/json" }),
-      async (req, res) => {
-        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-        const sig = req.headers["stripe-signature"];
+    // app.post(
+    //   "/webhook",
+    //   express.raw({ type: "application/json" }),
+    //   async (req, res) => {
+    //     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+    //     const sig = req.headers["stripe-signature"];
 
-        let event;
+    //     let event;
 
-        try {
-          event = stripe.webhooks.constructEvent(
-            req.body,
-            sig,
-            process.env.STRIPE_WEBHOOK_SECRET
-          );
-        } catch (err) {
-          console.error(" Webhook signature error:", err.message);
-          return res.status(400).send(`Webhook Error: ${err.message}`);
-        }
+    //     try {
+    //       event = stripe.webhooks.constructEvent(
+    //         req.body,
+    //         sig,
+    //         process.env.STRIPE_WEBHOOK_SECRET
+    //       );
+    //     } catch (err) {
+    //       console.error(" Webhook signature error:", err.message);
+    //       return res.status(400).send(`Webhook Error: ${err.message}`);
+    //     }
 
-        if (event.type === "checkout.session.completed") {
-          const session = event.data.object;
+    //     if (event.type === "checkout.session.completed") {
+    //       const session = event.data.object;
 
-          console.log(" Payment Success for:", session.customer_email);
+    //       console.log(" Payment Success for:", session.customer_email);
 
-          const result = await usersCollection.updateOne(
-            { email: session.customer_email },
-            { $set: { isPremium: true } }
-          );
+    //       const result = await usersCollection.updateOne(
+    //         { email: session.customer_email },
+    //         { $set: { isPremium: true } }
+    //       );
 
-          console.log(" MongoDB Update Result:", result.modifiedCount);
-        }
+    //       console.log(" MongoDB Update Result:", result.modifiedCount);
+    //     }
 
-        res.json({ received: true });
-      }
-    );
+    //     res.json({ received: true });
+    //   }
+    // );
 
     // ------ stripe set up end -------
 
