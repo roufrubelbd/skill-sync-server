@@ -7,15 +7,47 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 require("dotenv").config();
 const cors = require("cors");
 
+// Stripe webhook handler
+const stripeWebhookHandler = async (req, res) => {
+  const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+  const sig = req.headers["stripe-signature"];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      // Update MongoDB user as Premium - requires usersCollection from db context
+      // Note: This will need to be refactored to access usersCollection
+    }
+
+    res.json({ received: true });
+  } catch (error) {
+    res.status(400).send(`Webhook Error: ${error.message}`);
+  }
+};
+
 // Middleware
 // app.use(cors());
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://your-frontend.vercel.app"], //  frontend url
+    origin: ["http://localhost:5173", "https://skill-sync-learning.web.app"], //  frontend url
 
     credentials: true,
   })
 );
+
+app.post(
+  "/webhook",
+  express.raw({ type: "application/json" }),
+  stripeWebhookHandler
+);
+
 app.use(express.json());
 
 const uri = process.env.MONGODB_URI;
@@ -99,39 +131,16 @@ async function run() {
             quantity: 1,
           },
         ],
-        success_url: "http://localhost:5173/payment/success",
-        cancel_url: "http://localhost:5173/payment/cancel",
+        success_url:
+          "http://localhost:5173/payment/success" ||
+          "https://skill-sync-learning.web.app/payment/success",
+        cancel_url:
+          "http://localhost:5173/payment/cancel" ||
+          "https://skill-sync-learning.web.app/payment/cancel",
       });
 
       res.send({ url: session.url });
     });
-
-    app.post(
-      "/webhook",
-      express.raw({ type: "application/json" }),
-      async (req, res) => {
-        const sig = req.headers["stripe-signature"];
-        let event;
-
-        event = stripe.webhooks.constructEvent(
-          req.body,
-          sig,
-          process.env.STRIPE_WEBHOOK_SECRET
-        );
-
-        if (event.type === "checkout.session.completed") {
-          const session = event.data.object;
-
-          //  Update MongoDB user as Premium
-          await usersCollection.updateOne(
-            { email: session.customer_email },
-            { $set: { isPremium: true } }
-          );
-        }
-
-        res.json({ received: true });
-      }
-    );
 
     // ------ stripe set up end -------
 
