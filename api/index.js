@@ -11,11 +11,11 @@ const cors = require("cors");
 // app.use(cors());
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://skill-sync-learning.web.app"], //  frontend url
-
+    origin: true,
     credentials: true,
   })
 );
+
 
 app.use(express.json());
 
@@ -35,7 +35,7 @@ async function run() {
 
     const database = client.db("skillSync");
     const publicLessonsCollection = database.collection("publicLessons");
-    const privateLessonsCollection = database.collection("privateLessons");
+    // const privateLessonsCollection = database.collection("privateLessons");
     const usersCollection = database.collection("users");
     const reportsCollection = database.collection("reports");
 
@@ -75,7 +75,7 @@ async function run() {
       res.send(result);
     });
 
-    // ------ stripe set up start -------
+    // ------------------------- stripe set up start -------------------------
 
     app.post(
       "/webhook",
