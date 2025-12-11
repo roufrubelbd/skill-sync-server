@@ -1,5 +1,5 @@
 const { ObjectId } = require("mongodb");
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+// const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const express = require("express");
 const app = express();
 const port = process.env.PORT || 5000;
@@ -8,15 +8,18 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 require("dotenv").config();
 const cors = require("cors");
 
-//   middleware
-app.use(cors({ origin: true, credentials: true }));
-app.use((req, res, next) => {
-  if (req.originalUrl === "/webhook") {
-    next();
-  } else {
-    express.json()(req, res, next);
-  }
-});
+//  middleware
+app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
+app.use(express.json());
+
+// To handle raw body for webhook separately
+// app.use((req, res, next) => {
+//   if (req.originalUrl === "/webhook") {
+//     next();
+//   } else {
+//     express.json()(req, res, next);
+//   }
+// });
 
 const uri = process.env.MONGODB_URI;
 
@@ -33,15 +36,15 @@ async function run() {
     // await client.connect();
 
     const database = client.db("skillSync");
-    const publicLessonsCollection = database.collection("publicLessons");
-    // const privateLessonsCollection = database.collection("privateLessons");
+    const allLessonsCollection = database.collection("allLessons");
+    const featuredLessonsCollection = database.collection("featuredLessons");
     const usersCollection = database.collection("users");
     const reportsCollection = database.collection("reports");
 
     // ADD a public lesson
     app.post("/add-lesson", async (req, res) => {
       const addLesson = req.body;
-      const result = await publicLessonsCollection.insertOne(addLesson);
+      const result = await allLessonsCollection.insertOne(addLesson);
       res.send(result);
     });
 
@@ -60,6 +63,113 @@ async function run() {
 
       const result = await usersCollection.insertOne(user);
       res.send(result);
+    });
+
+    // ================================
+    // FEATURED LESSONS START
+    // ================================
+
+    // ADD TO FEATURED
+    app.post("/featured-lessons", async (req, res) => {
+      const payload = req.body;
+
+      // prevent duplicates
+      const exists = await featuredLessonsCollection.findOne({
+        lessonId: payload.lessonId,
+      });
+
+      if (exists) {
+        return res.send({ message: "Already featured" });
+      }
+
+      const result = await featuredLessonsCollection.insertOne(payload);
+      res.send(result);
+    });
+
+    // GET ALL FEATURED LESSONS
+    app.get("/featured-lessons", async (req, res) => {
+      const result = await featuredLessonsCollection.find().toArray();
+      res.send(result);
+    });
+
+    // DELETE ALL LESSON
+    app.delete("/all-lessons/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await allLessonsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
+    // DELETE FEATURED LESSON
+    app.delete("/featured-lessons/:id", async (req, res) => {
+      const id = req.params.id;
+
+      const result = await featuredLessonsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      res.send(result);
+    });
+
+    // UPDATE FEATURED LESSON
+    app.patch("/featured-lessons/:id", async (req, res) => {
+      const id = req.params.id;
+      const updateData = req.body;
+
+      const result = await featuredLessonsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updateData }
+      );
+
+      res.send(result);
+    });
+
+    // ================================
+    // FEATURED LESSONS END
+    // ================================
+
+    // -------------- GET TOP CONTRIBUTORS ------
+    app.get("/top-contributors", async (req, res) => {
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+
+      const contributors = await allLessonsCollection
+        .aggregate([
+          { $match: { createdAt: { $gte: oneWeekAgo.toISOString() } } },
+          { $group: { _id: "$createdByEmail", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+          { $limit: 5 },
+          {
+            $lookup: {
+              from: "users",
+              localField: "_id",
+              foreignField: "email",
+              as: "userData",
+            },
+          },
+          { $unwind: "$userData" },
+        ])
+        .toArray();
+
+      res.send(contributors);
+    });
+
+    // GET MOST SAVED LESSONS
+    app.get("/most-saved-lessons", async (req, res) => {
+      const lessons = await allLessonsCollection
+        .aggregate([
+          {
+            $addFields: {
+              saveCount: { $size: "$favorites" },
+            },
+          },
+          { $sort: { saveCount: -1 } },
+          { $limit: 6 },
+        ])
+        .toArray();
+
+      res.send(lessons);
     });
 
     // ------------------------- stripe set up start -------------------------
@@ -151,17 +261,29 @@ async function run() {
     // ------ stripe set up end -------
 
     // GET public lessons
-    app.get("/public-lessons", async (req, res) => {
-      //   console.log(" Public Lessons API Hit");
-      const cursor = publicLessonsCollection.find();
+    app.get("/all-lessons", async (req, res) => {
+      const cursor = allLessonsCollection.find();
       const result = await cursor.toArray();
       res.send(result);
+    });
+
+    // GET public lessons
+    app.get("/public-lessons", async (req, res) => {
+      try {
+        // Find only lessons with visibility: "public"
+        const cursor = allLessonsCollection.find({ visibility: "public" });
+        const result = await cursor.toArray();
+        res.status(200).json(result);
+      } catch (error) {
+        console.error("Error fetching public lessons:", error);
+        res.status(500).json({ error: "Failed to fetch public lessons" });
+      }
     });
 
     // ------------ START LESSON DETAILS page relevant apis ------------
 
     //  POST COMMENT
-    app.post("/public-lessons/:id/comment", async (req, res) => {
+    app.post("/all-lessons/:id/comment", async (req, res) => {
       try {
         const { id } = req.params;
         const payload = req.body;
@@ -171,7 +293,7 @@ async function run() {
           timestamp: new Date(),
         };
 
-        const result = await publicLessonsCollection.updateOne(
+        const result = await allLessonsCollection.updateOne(
           { _id: new ObjectId(id) },
           { $push: { comments: newComment } }
         );
@@ -183,8 +305,8 @@ async function run() {
     });
 
     //  GET COMMENTS
-    app.get("/public-lessons/:id/comments", async (req, res) => {
-      const lesson = await publicLessonsCollection.findOne({
+    app.get("/all-lessons/:id/comments", async (req, res) => {
+      const lesson = await allLessonsCollection.findOne({
         _id: new ObjectId(req.params.id),
       });
 
@@ -194,7 +316,7 @@ async function run() {
     // Toggle Like
     app.patch("/details/like/:id", async (req, res) => {
       const { email } = req.body;
-      const lesson = await publicLessonsCollection.findOne({
+      const lesson = await allLessonsCollection.findOne({
         _id: new ObjectId(req.params.id),
       });
 
@@ -206,7 +328,7 @@ async function run() {
         ? { $pull: { likes: email } }
         : { $addToSet: { likes: email } };
 
-      const result = await publicLessonsCollection.updateOne(
+      const result = await allLessonsCollection.updateOne(
         { _id: new ObjectId(req.params.id) },
         update
       );
@@ -219,7 +341,7 @@ async function run() {
       try {
         const { email } = req.body;
 
-        const lesson = await publicLessonsCollection.findOne({
+        const lesson = await allLessonsCollection.findOne({
           _id: new ObjectId(req.params.id),
         });
 
@@ -230,7 +352,7 @@ async function run() {
           ? { $pull: { favorites: email } }
           : { $addToSet: { favorites: email } };
 
-        await publicLessonsCollection.updateOne(
+        await allLessonsCollection.updateOne(
           { _id: new ObjectId(req.params.id) },
           update
         );
@@ -242,7 +364,7 @@ async function run() {
     });
 
     // Get Single Lesson
-    app.get("/public-lessons/:id", async (req, res) => {
+    app.get("/all-lessons/:id", async (req, res) => {
       try {
         const id = req.params.id;
 
@@ -250,7 +372,7 @@ async function run() {
           return res.status(400).send({ message: "Invalid lesson ID" });
         }
 
-        const result = await publicLessonsCollection.findOne({
+        const result = await allLessonsCollection.findOne({
           _id: new ObjectId(id),
         });
 
@@ -274,7 +396,7 @@ async function run() {
     // Get Similar Lessons
     app.get("/similar-lessons/:category/:tone", async (req, res) => {
       const { category, tone } = req.params;
-      const result = await publicLessonsCollection
+      const result = await allLessonsCollection
         .find({
           $or: [{ category }, { tone }],
         })
@@ -288,7 +410,7 @@ async function run() {
     //  GET SINGLE LESSON
     app.get("/update/:id", async (req, res) => {
       const id = req.params.id;
-      const result = await publicLessonsCollection.findOne({
+      const result = await allLessonsCollection.findOne({
         _id: new ObjectId(id),
       });
       res.send(result);
@@ -299,17 +421,16 @@ async function run() {
       const id = req.params.id;
       const updatedLesson = req.body;
 
-      const result = await publicLessonsCollection.updateOne(
+      const result = await allLessonsCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: updatedLesson }
       );
-
       res.send(result);
     });
 
     // GET user
     app.get("/users", async (req, res) => {
-      console.log(" Users API Hit");
+      // console.log(" Users API Hit");
       const cursor = usersCollection.find();
       const result = await cursor.toArray();
       res.send(result);
