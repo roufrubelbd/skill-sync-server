@@ -244,14 +244,14 @@ async function run() {
           const userEmail =
             session.metadata?.userEmail || session.customer_email;
 
-          console.log("✅ Payment Success for:", userEmail);
+          console.log("Payment Success for:", userEmail);
 
           const result = await usersCollection.updateOne(
             { email: userEmail },
             { $set: { isPremium: true } }
           );
 
-          console.log("✅ MongoDB Update Result:", result.modifiedCount);
+          console.log(" MongoDB Update Result:", result.modifiedCount);
         }
 
         res.json({ received: true });
@@ -260,11 +260,49 @@ async function run() {
 
     // ------ stripe set up end -------
 
+    // Get Single Lesson
+    app.get("/all-lessons/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid lesson ID" });
+        }
+        const result = await allLessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!result) {
+          return res.status(404).send({ message: "Lesson not found" });
+        }
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Server error", error });
+      }
+    });
+
     // GET public lessons
     app.get("/all-lessons", async (req, res) => {
       const cursor = allLessonsCollection.find();
       const result = await cursor.toArray();
       res.send(result);
+    });
+
+    // ------------ GET public lessons ---------------
+    app.get("/public-lessons/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid lesson ID" });
+        }
+        const result = await allLessonsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!result) {
+          return res.status(404).send({ message: "Lesson not found" });
+        }
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Server error", error });
+      }
     });
 
     // GET public lessons
@@ -360,29 +398,6 @@ async function run() {
         res.send({ success: true, saved: !alreadySaved });
       } catch (error) {
         res.status(500).send({ message: "Favorite failed", error });
-      }
-    });
-
-    // Get Single Lesson
-    app.get("/all-lessons/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid lesson ID" });
-        }
-
-        const result = await allLessonsCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!result) {
-          return res.status(404).send({ message: "Lesson not found" });
-        }
-
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: "Server error", error });
       }
     });
 
