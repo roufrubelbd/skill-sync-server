@@ -9,7 +9,14 @@ require("dotenv").config();
 const cors = require("cors");
 
 //  middleware
-app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
+// app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
+app.use(
+  cors({
+    origin: ["http://localhost:5173", process.env.CLIENT_URL],
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
 // To handle raw body for webhook separately
@@ -33,7 +40,9 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
+    // console.log("Connecting to MongoDB...");
     // await client.connect();
+    // console.log("MongoDB connected successfully!");
 
     const database = client.db("skillSync");
     const allLessonsCollection = database.collection("allLessons");
@@ -64,6 +73,118 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+
+    // =========================================
+    //  ADMIN ANALYTICS ------------- START
+    // =========================================
+
+    // ============================
+    // ADMIN ANALYTICS API
+    // ============================
+    app.get("/admin/analytics", async (req, res) => {
+      try {
+        // total users
+        const totalUsers = await usersCollection.countDocuments();
+
+        // total public lessons
+        const totalPublicLessons = await allLessonsCollection.countDocuments({
+          visibility: "public",
+        });
+
+        // total reports
+        const totalReports = await reportsCollection.countDocuments();
+
+        // today's new lessons
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const todaysLessons = await allLessonsCollection.countDocuments({
+          createdAt: { $gte: today.toISOString() },
+        });
+
+        // most active contributors
+        const contributors = await allLessonsCollection
+          .aggregate([
+            {
+              $group: {
+                _id: "$createdByEmail",
+                lessonCount: { $sum: 1 },
+              },
+            },
+            { $sort: { lessonCount: -1 } },
+            { $limit: 5 },
+            {
+              $lookup: {
+                from: "users",
+                localField: "_id",
+                foreignField: "email",
+                as: "userData",
+              },
+            },
+            { $unwind: "$userData" },
+          ])
+          .toArray();
+
+        // Lessons growth per day (last 7 days)
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+        const lessonGrowth = await allLessonsCollection
+          .aggregate([
+            {
+              $match: {
+                createdAt: { $gte: sevenDaysAgo.toISOString() },
+              },
+            },
+            {
+              $group: {
+                _id: {
+                  $substr: ["$createdAt", 0, 10],
+                },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+          ])
+          .toArray();
+
+        // Users growth per day (last 7 days)
+        const userGrowth = await usersCollection
+          .aggregate([
+            {
+              $match: {
+                createdAt: { $gte: sevenDaysAgo.toISOString() },
+              },
+            },
+            {
+              $group: {
+                _id: {
+                  $substr: ["$createdAt", 0, 10],
+                },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+          ])
+          .toArray();
+
+        res.send({
+          totalUsers,
+          totalPublicLessons,
+          totalReports,
+          todaysLessons,
+          contributors,
+          lessonGrowth,
+          userGrowth,
+        });
+      } catch (err) {
+        res.status(500).send({ error: err.message });
+      }
+    });
+
+    // =========================================
+    //  ADMIN ANALYTICS -------------- END
+    // =========================================
 
     // ================================
     // FEATURED LESSONS START
@@ -198,7 +319,7 @@ async function run() {
           ],
           mode: "payment",
 
-          // ✅ This is IMPORTANT (used by webhook)
+          //  This is IMPORTANT (used by webhook)
           metadata: {
             userEmail: email,
             plan: "premium",
@@ -206,7 +327,7 @@ async function run() {
 
           customer_email: email,
 
-          // ✅ session_id added like your sample
+          //  session_id added like your sample
           success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
           cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
         });
@@ -218,7 +339,7 @@ async function run() {
       }
     });
 
-    // ✅ STRIPE WEBHOOK (FIXED & WORKING)
+    //  STRIPE WEBHOOK (FIXED & WORKING)
     app.post(
       "/webhook",
       express.raw({ type: "application/json" }),
@@ -303,6 +424,17 @@ async function run() {
       } catch (error) {
         res.status(500).send({ message: "Server error", error });
       }
+    });
+
+    // GET my lessons
+    app.get("/my-lessons", async (req, res) => {
+      const email = req.query.email;
+      if (!email) return res.status(400).send("Email is required");
+      const cursor = allLessonsCollection
+        .find({ createdByEmail: email })
+        .sort({ createdAt: -1 });
+      const lessons = await cursor.toArray();
+      res.json(lessons);
     });
 
     // GET public lessons
@@ -402,12 +534,141 @@ async function run() {
     });
 
     // Report Lesson
+
     app.post("/lesson-reports", async (req, res) => {
       const payload = req.body;
+      payload.timestamp = new Date();
       const result = await reportsCollection.insertOne(payload);
       res.send(result);
     });
 
+    // === Repor ted lessons endpoints (safe implementation) ===
+    // Put these inside your run() where collections are defined.
+
+    //  GET grouped reported lessons
+    app.get("/reported-lessons", async (req, res) => {
+      try {
+        // Group reports by lessonId (string) and collect report entries
+        const grouped = await reportsCollection
+          .aggregate([
+            { $sort: { timestamp: -1 } },
+            {
+              $group: {
+                _id: "$lessonId",
+                totalReports: { $sum: 1 },
+                reports: {
+                  $push: {
+                    reporterEmail: "$reporterEmail",
+                    reporterName: "$reporterName",
+                    reason: "$reason",
+                    timestamp: "$timestamp",
+                    _id: "$_id",
+                  },
+                },
+              },
+            },
+          ])
+          .toArray();
+
+        // For each group, attempt to find the lesson (safe conversion)
+        const out = [];
+        for (const g of grouped) {
+          const lessonIdStr = g._id;
+          let lesson = null;
+
+          // Try to find lesson by ObjectId if valid, otherwise try string match
+          if (ObjectId.isValid(lessonIdStr)) {
+            lesson = await allLessonsCollection.findOne({
+              _id: new ObjectId(lessonIdStr),
+            });
+          }
+          // if not found yet, try matching by string field fallback (rare)
+          if (!lesson) {
+            lesson = await allLessonsCollection.findOne({
+              _id: lessonIdStr,
+            });
+          }
+
+          // Build item (if lesson is missing, include minimal info)
+          out.push({
+            lessonId: lesson ? lesson._id.toString() : lessonIdStr,
+            title: lesson ? lesson.title : "(Deleted or missing)",
+            image: lesson ? lesson.image : "",
+            category: lesson ? lesson.category : "",
+            totalReports: g.totalReports,
+            reports: g.reports,
+          });
+        }
+
+        res.status(200).send(out);
+      } catch (err) {
+        console.error("GET /reported-lessons error:", err);
+        res.status(500).send({
+          message: "Failed to fetch reported lessons",
+          error: err.message,
+        });
+      }
+    });
+
+    //  DELETE reports only for a lesson (ignore action)
+    app.delete("/reported-lessons/:lessonId/reports", async (req, res) => {
+      try {
+        const { lessonId } = req.params;
+        const result = await reportsCollection.deleteMany({
+          lessonId: lessonId,
+        });
+        res.status(200).send({ deletedCount: result.deletedCount });
+      } catch (err) {
+        console.error("DELETE /reported-lessons/:lessonId/reports error:", err);
+        res
+          .status(500)
+          .send({ message: "Failed to clear reports", error: err.message });
+      }
+    });
+
+    //  DELETE lesson + its reports (admin delete)
+    app.delete("/reported-lessons/:lessonId/lesson", async (req, res) => {
+      try {
+        const { lessonId } = req.params;
+        let lessonDeleteResult = { deletedCount: 0 };
+
+        if (ObjectId.isValid(lessonId)) {
+          lessonDeleteResult = await allLessonsCollection.deleteOne({
+            _id: new ObjectId(lessonId),
+          });
+        } else {
+          // fallback: try deleting by string field if you stored _id as string (unlikely)
+          lessonDeleteResult = await allLessonsCollection.deleteOne({
+            _id: lessonId,
+          });
+        }
+
+        const reportsDeleteResult = await reportsCollection.deleteMany({
+          lessonId: lessonId,
+        });
+
+        res.status(200).send({
+          lessonDeleted: lessonDeleteResult.deletedCount || 0,
+          reportsDeleted: reportsDeleteResult.deletedCount || 0,
+        });
+      } catch (err) {
+        console.error("DELETE /reported-lessons/:lessonId/lesson error:", err);
+        res.status(500).send({
+          message: "Failed to delete lesson and reports",
+          error: err.message,
+        });
+      }
+    });
+
+    // app.get("/lesson-reports", async (req, res) => {
+    //   const result = await reportsCollection.find().toArray();
+    //   console.log(result)
+    //   res.send(result);
+    // });
+
+    // ================================
+
+    //=================================
     // Get Similar Lessons
     app.get("/similar-lessons/:category/:tone", async (req, res) => {
       const { category, tone } = req.params;
@@ -423,7 +684,7 @@ async function run() {
     // ------------ END LESSON DETAILS page relevant apis ------------
 
     //  GET SINGLE LESSON
-    app.get("/update/:id", async (req, res) => {
+    app.get("/update-lesson/:id", async (req, res) => {
       const id = req.params.id;
       const result = await allLessonsCollection.findOne({
         _id: new ObjectId(id),
@@ -432,7 +693,7 @@ async function run() {
     });
 
     //  UPDATE LESSON
-    app.patch("/update/:id", async (req, res) => {
+    app.patch("/update-lesson/:id", async (req, res) => {
       const id = req.params.id;
       const updatedLesson = req.body;
 
@@ -461,6 +722,85 @@ async function run() {
         isPremium: user?.isPremium || false,
       });
     });
+
+    // ===========================
+
+    // ==========================
+    // ADMIN — Manage Users APIs
+    // ==========================
+
+    // Search users
+    app.get("/admin/search-users", async (req, res) => {
+      const q = req.query.q || "";
+
+      const users = await usersCollection
+        .find({
+          $or: [
+            { name: { $regex: q, $options: "i" } },
+            { email: { $regex: q, $options: "i" } },
+          ],
+        })
+        .toArray();
+
+      res.send(users);
+    });
+
+    // Promote user to admin
+    app.patch("/admin/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { role: "admin" } }
+      );
+
+      res.send(result);
+    });
+
+    // Delete user
+    app.delete("/admin/users/:email", async (req, res) => {
+      const email = req.params.email;
+
+      const result = await usersCollection.deleteOne({ email });
+
+      res.send(result);
+    });
+
+    // ========================================
+
+    // ================================================
+
+    // PATCH: Mark lesson reviewed or unreviewed
+    app.patch("/all-lessons/review/:id", async (req, res) => {
+      const { reviewed } = req.body;
+      const result = await allLessonsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { reviewed } }
+      );
+      res.send(result);
+    });
+
+    // PATCH: public to private || private to public
+    app.patch("/all-lessons/private/:id", async (req, res) => {
+      const { visibility } = req.body;
+      const result = await allLessonsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { visibility } }
+      );
+      res.send(result);
+    });
+
+    // PATCH: free to premium || private to public
+    app.patch("/all-lessons/premium/:id", async (req, res) => {
+      const { accessLevel } = req.body;
+      const result = await allLessonsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { accessLevel } }
+      );
+      res.send(result);
+    });
+
+    // ================================================
 
     // Send a ping to confirm a successful connection
     // await client.db("admin").command({ ping: 1 });
