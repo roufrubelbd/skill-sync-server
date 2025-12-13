@@ -179,7 +179,7 @@ async function run() {
       }
     });
 
-    // ADMIN OTHERS DATA -->>
+    //-------------- ADMIN OTHERS DATA -------------------------->>
     // ---- GET TOP CONTRIBUTORS ------
     app.get("/top-contributors", async (req, res) => {
       const oneWeekAgo = new Date();
@@ -331,6 +331,49 @@ async function run() {
           error: err.message,
         });
       }
+    });
+
+    // ADMIN — Manage Users APIs -------
+
+    // Search users
+    app.get("/admin/search-users", async (req, res) => {
+      const q = req.query.q || "";
+      const users = await usersCollection
+        .find({
+          $or: [
+            { name: { $regex: q, $options: "i" } },
+            { email: { $regex: q, $options: "i" } },
+          ],
+        })
+        .toArray();
+      res.send(users);
+    });
+
+    // Promote user to admin
+    app.patch("/admin/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: { role: "admin" } }
+      );
+      res.send(result);
+    });
+
+    // Delete user
+    app.delete("/admin/users/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.deleteOne({ email });
+      res.send(result);
+    });
+
+    // PATCH: Mark lesson reviewed or unreviewed
+    app.patch("/all-lessons/review/:id", async (req, res) => {
+      const { reviewed } = req.body;
+      const result = await allLessonsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { reviewed } }
+      );
+      res.send(result);
     });
 
     // =========== ADMIN ANALYTICS ---------- END =======================
@@ -575,6 +618,26 @@ async function run() {
       res.send(result);
     });
 
+    // PATCH: public to private || private to public
+    app.patch("/all-lessons/private/:id", async (req, res) => {
+      const { visibility } = req.body;
+      const result = await allLessonsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { visibility } }
+      );
+      res.send(result);
+    });
+
+    // PATCH: free to premium || private to public
+    app.patch("/all-lessons/premium/:id", async (req, res) => {
+      const { accessLevel } = req.body;
+      const result = await allLessonsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { accessLevel } }
+      );
+      res.send(result);
+    });
+
     // ================ ALL LESSONS ----------- END =========================
 
     // ========== STRIPE set up -------------- START ============================
@@ -649,80 +712,6 @@ async function run() {
       }
     );
     // ========= STRIPE set up ------------- END =============================
-
-    // ADMIN — Manage Users APIs
-    // ==========================
-
-    // Search users
-    app.get("/admin/search-users", async (req, res) => {
-      const q = req.query.q || "";
-
-      const users = await usersCollection
-        .find({
-          $or: [
-            { name: { $regex: q, $options: "i" } },
-            { email: { $regex: q, $options: "i" } },
-          ],
-        })
-        .toArray();
-
-      res.send(users);
-    });
-
-    // Promote user to admin
-    app.patch("/admin/users/:email/role", async (req, res) => {
-      const email = req.params.email;
-
-      const result = await usersCollection.updateOne(
-        { email },
-        { $set: { role: "admin" } }
-      );
-
-      res.send(result);
-    });
-
-    // Delete user
-    app.delete("/admin/users/:email", async (req, res) => {
-      const email = req.params.email;
-
-      const result = await usersCollection.deleteOne({ email });
-
-      res.send(result);
-    });
-
-    // ========================================
-
-    // ================================================
-
-    // PATCH: Mark lesson reviewed or unreviewed
-    app.patch("/all-lessons/review/:id", async (req, res) => {
-      const { reviewed } = req.body;
-      const result = await allLessonsCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: { reviewed } }
-      );
-      res.send(result);
-    });
-
-    // PATCH: public to private || private to public
-    app.patch("/all-lessons/private/:id", async (req, res) => {
-      const { visibility } = req.body;
-      const result = await allLessonsCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: { visibility } }
-      );
-      res.send(result);
-    });
-
-    // PATCH: free to premium || private to public
-    app.patch("/all-lessons/premium/:id", async (req, res) => {
-      const { accessLevel } = req.body;
-      const result = await allLessonsCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: { accessLevel } }
-      );
-      res.send(result);
-    });
 
     // ================================================
 
