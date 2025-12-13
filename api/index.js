@@ -1,12 +1,13 @@
 const { ObjectId } = require("mongodb");
-// const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const express = require("express");
 const app = express();
-const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion } = require("mongodb");
-
 require("dotenv").config();
 const cors = require("cors");
+
+const port = process.env.PORT || 5000;
+const uri = process.env.MONGODB_URI;
 
 //  middleware
 // app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
@@ -17,19 +18,17 @@ app.use(
   })
 );
 
-app.use(express.json());
-
+// app.use(express.json());
 // To handle raw body for webhook separately
-// app.use((req, res, next) => {
-//   if (req.originalUrl === "/webhook") {
-//     next();
-//   } else {
-//     express.json()(req, res, next);
-//   }
-// });
+app.use((req, res, next) => {
+  if (req.originalUrl === "/webhook") {
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
 
-const uri = process.env.MONGODB_URI;
-
+// ======== MONGODB Connections ===================================
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -37,12 +36,11 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
-
 async function run() {
   try {
-    // console.log("Connecting to MongoDB...");
     // await client.connect();
-    // console.log("MongoDB connected successfully!");
+
+    // ======== DATABASE --------- START ==================================
 
     const database = client.db("skillSync");
     const allLessonsCollection = database.collection("allLessons");
@@ -50,58 +48,61 @@ async function run() {
     const usersCollection = database.collection("users");
     const reportsCollection = database.collection("reports");
 
-    // ADD a public lesson
-    app.post("/add-lesson", async (req, res) => {
-      const addLesson = req.body;
-      const result = await allLessonsCollection.insertOne(addLesson);
-      res.send(result);
-    });
+    // ======== DATABASE --------- END ==================================
 
-    //  SAVE USER (REGISTER + GOOGLE)
+    // ========  USER API ---------- START ==== ===============================
+
     app.post("/users", async (req, res) => {
-      console.log("Hit users collection post");
+      // console.log("Hit users collection post");
       const user = req.body;
-
       const existingUser = await usersCollection.findOne({
         email: user.email,
       });
-
       if (existingUser) {
         return res.send({ message: "User already exists" });
       }
-
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
 
-    // =========================================
-    //  ADMIN ANALYTICS ------------- START
-    // =========================================
+    // GET user
+    app.get("/users", async (req, res) => {
+      // console.log(" Users API Hit");
+      const cursor = usersCollection.find();
+      const result = await cursor.toArray();
+      res.send(result);
+    });
 
-    // ============================
-    // ADMIN ANALYTICS API
-    // ============================
+    // GET a user's role
+    app.get("/users/:email/role", async (req, res) => {
+      const email = req.params.email;
+      const user = await usersCollection.findOne({ email });
+      res.send({
+        role: user?.role || "user",
+        isPremium: user?.isPremium || false,
+      });
+    });
+
+    // ========== USER API ------------ END ================================
+
+    //  ADMIN ANALYTICS ------------- START ==================================
+
     app.get("/admin/analytics", async (req, res) => {
       try {
         // total users
         const totalUsers = await usersCollection.countDocuments();
-
         // total public lessons
         const totalPublicLessons = await allLessonsCollection.countDocuments({
           visibility: "public",
         });
-
         // total reports
         const totalReports = await reportsCollection.countDocuments();
-
         // today's new lessons
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-
         const todaysLessons = await allLessonsCollection.countDocuments({
           createdAt: { $gte: today.toISOString() },
         });
-
         // most active contributors
         const contributors = await allLessonsCollection
           .aggregate([
@@ -124,11 +125,9 @@ async function run() {
             { $unwind: "$userData" },
           ])
           .toArray();
-
         // Lessons growth per day (last 7 days)
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
         const lessonGrowth = await allLessonsCollection
           .aggregate([
             {
@@ -147,7 +146,6 @@ async function run() {
             { $sort: { _id: 1 } },
           ])
           .toArray();
-
         // Users growth per day (last 7 days)
         const userGrowth = await usersCollection
           .aggregate([
@@ -167,7 +165,6 @@ async function run() {
             { $sort: { _id: 1 } },
           ])
           .toArray();
-
         res.send({
           totalUsers,
           totalPublicLessons,
@@ -182,79 +179,11 @@ async function run() {
       }
     });
 
-    // =========================================
-    //  ADMIN ANALYTICS -------------- END
-    // =========================================
-
-    // ================================
-    // FEATURED LESSONS START
-    // ================================
-
-    // ADD TO FEATURED
-    app.post("/featured-lessons", async (req, res) => {
-      const payload = req.body;
-
-      // prevent duplicates
-      const exists = await featuredLessonsCollection.findOne({
-        lessonId: payload.lessonId,
-      });
-
-      if (exists) {
-        return res.send({ message: "Already featured" });
-      }
-
-      const result = await featuredLessonsCollection.insertOne(payload);
-      res.send(result);
-    });
-
-    // GET ALL FEATURED LESSONS
-    app.get("/featured-lessons", async (req, res) => {
-      const result = await featuredLessonsCollection.find().toArray();
-      res.send(result);
-    });
-
-    // DELETE ALL LESSON
-    app.delete("/all-lessons/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await allLessonsCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
-      res.send(result);
-    });
-
-    // DELETE FEATURED LESSON
-    app.delete("/featured-lessons/:id", async (req, res) => {
-      const id = req.params.id;
-
-      const result = await featuredLessonsCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
-
-      res.send(result);
-    });
-
-    // UPDATE FEATURED LESSON
-    app.patch("/featured-lessons/:id", async (req, res) => {
-      const id = req.params.id;
-      const updateData = req.body;
-
-      const result = await featuredLessonsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updateData }
-      );
-
-      res.send(result);
-    });
-
-    // ================================
-    // FEATURED LESSONS END
-    // ================================
-
-    // -------------- GET TOP CONTRIBUTORS ------
+    // ADMIN OTHERS DATA -->>
+    // ---- GET TOP CONTRIBUTORS ------
     app.get("/top-contributors", async (req, res) => {
       const oneWeekAgo = new Date();
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-
       const contributors = await allLessonsCollection
         .aggregate([
           { $match: { createdAt: { $gte: oneWeekAgo.toISOString() } } },
@@ -272,7 +201,6 @@ async function run() {
           { $unwind: "$userData" },
         ])
         .toArray();
-
       res.send(contributors);
     });
 
@@ -289,97 +217,183 @@ async function run() {
           { $limit: 6 },
         ])
         .toArray();
-
       res.send(lessons);
     });
 
-    // ------------------------- stripe set up start -------------------------
-
-    // CREATE CHECKOUT SESSION
-    app.post("/create-checkout-session", async (req, res) => {
+    //  GET grouped reported lessons
+    app.get("/reported-lessons", async (req, res) => {
       try {
-        const { email } = req.body;
-
-        if (!email) {
-          return res.status(400).send({ message: "Email is required" });
-        }
-
-        const session = await stripe.checkout.sessions.create({
-          line_items: [
+        // Group reports by lessonId (string) and collect report entries
+        const grouped = await reportsCollection
+          .aggregate([
+            { $sort: { timestamp: -1 } },
             {
-              price_data: {
-                currency: "usd",
-                unit_amount: 1500, // $15
-                product_data: {
-                  name: "SkillSync Premium Lifetime",
+              $group: {
+                _id: "$lessonId",
+                totalReports: { $sum: 1 },
+                reports: {
+                  $push: {
+                    reporterEmail: "$reporterEmail",
+                    reporterName: "$reporterName",
+                    reason: "$reason",
+                    timestamp: "$timestamp",
+                    _id: "$_id",
+                  },
                 },
               },
-              quantity: 1,
             },
-          ],
-          mode: "payment",
+          ])
+          .toArray();
 
-          //  This is IMPORTANT (used by webhook)
-          metadata: {
-            userEmail: email,
-            plan: "premium",
-          },
+        // For each group, attempt to find the lesson (safe conversion)
+        const out = [];
+        for (const g of grouped) {
+          const lessonIdStr = g._id;
+          let lesson = null;
 
-          customer_email: email,
+          // Try to find lesson by ObjectId if valid, otherwise try string match
+          if (ObjectId.isValid(lessonIdStr)) {
+            lesson = await allLessonsCollection.findOne({
+              _id: new ObjectId(lessonIdStr),
+            });
+          }
+          // if not found yet, try matching by string field fallback (rare)
+          if (!lesson) {
+            lesson = await allLessonsCollection.findOne({
+              _id: lessonIdStr,
+            });
+          }
 
-          //  session_id added like your sample
-          success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+          // Build item (if lesson is missing, include minimal info)
+          out.push({
+            lessonId: lesson ? lesson._id.toString() : lessonIdStr,
+            title: lesson ? lesson.title : "(Deleted or missing)",
+            image: lesson ? lesson.image : "",
+            category: lesson ? lesson.category : "",
+            totalReports: g.totalReports,
+            reports: g.reports,
+          });
+        }
+
+        res.status(200).send(out);
+      } catch (err) {
+        console.error("GET /reported-lessons error:", err);
+        res.status(500).send({
+          message: "Failed to fetch reported lessons",
+          error: err.message,
         });
-
-        res.send({ url: session.url });
-      } catch (error) {
-        console.error("Stripe Error:", error.message);
-        res.status(500).send({ message: error.message });
       }
     });
 
-    //  STRIPE WEBHOOK (FIXED & WORKING)
-    app.post(
-      "/webhook",
-      express.raw({ type: "application/json" }),
-      async (req, res) => {
-        const sig = req.headers["stripe-signature"];
-
-        let event;
-
-        try {
-          event = stripe.webhooks.constructEvent(
-            req.body,
-            sig,
-            process.env.STRIPE_WEBHOOK_SECRET
-          );
-        } catch (err) {
-          console.error("Webhook signature error:", err.message);
-          return res.status(400).send(`Webhook Error: ${err.message}`);
-        }
-
-        if (event.type === "checkout.session.completed") {
-          const session = event.data.object;
-
-          const userEmail =
-            session.metadata?.userEmail || session.customer_email;
-
-          console.log("Payment Success for:", userEmail);
-
-          const result = await usersCollection.updateOne(
-            { email: userEmail },
-            { $set: { isPremium: true } }
-          );
-
-          console.log(" MongoDB Update Result:", result.modifiedCount);
-        }
-
-        res.json({ received: true });
+    //  DELETE reports only for a lesson by admin delete/ ignore
+    app.delete("/reported-lessons/:lessonId/reports", async (req, res) => {
+      try {
+        const { lessonId } = req.params;
+        const result = await reportsCollection.deleteMany({
+          lessonId: lessonId,
+        });
+        res.status(200).send({ deletedCount: result.deletedCount });
+      } catch (err) {
+        console.error("DELETE /reported-lessons/:lessonId/reports error:", err);
+        res
+          .status(500)
+          .send({ message: "Failed to clear reports", error: err.message });
       }
-    );
+    });
 
-    // ------ stripe set up end -------
+    //  DELETE lesson + its reports by admin delete
+    app.delete("/reported-lessons/:lessonId/lesson", async (req, res) => {
+      try {
+        const { lessonId } = req.params;
+        let lessonDeleteResult = { deletedCount: 0 };
+
+        if (ObjectId.isValid(lessonId)) {
+          lessonDeleteResult = await allLessonsCollection.deleteOne({
+            _id: new ObjectId(lessonId),
+          });
+        } else {
+          // fallback: try deleting by string field if you stored _id as string (unlikely)
+          lessonDeleteResult = await allLessonsCollection.deleteOne({
+            _id: lessonId,
+          });
+        }
+        const reportsDeleteResult = await reportsCollection.deleteMany({
+          lessonId: lessonId,
+        });
+        res.status(200).send({
+          lessonDeleted: lessonDeleteResult.deletedCount || 0,
+          reportsDeleted: reportsDeleteResult.deletedCount || 0,
+        });
+      } catch (err) {
+        console.error("DELETE /reported-lessons/:lessonId/lesson error:", err);
+        res.status(500).send({
+          message: "Failed to delete lesson and reports",
+          error: err.message,
+        });
+      }
+    });
+
+    // =========== ADMIN ANALYTICS ---------- END =======================
+
+    // ======= FEATURED LESSONS --------- START ===========================
+    // ADD TO FEATURED
+    app.post("/featured-lessons", async (req, res) => {
+      const payload = req.body;
+      // prevent duplicates
+      const exists = await featuredLessonsCollection.findOne({
+        lessonId: payload.lessonId,
+      });
+      if (exists) {
+        return res.send({ message: "Already featured" });
+      }
+      const result = await featuredLessonsCollection.insertOne(payload);
+      res.send(result);
+    });
+
+    // GET ALL FEATURED LESSONS
+    app.get("/featured-lessons", async (req, res) => {
+      const result = await featuredLessonsCollection.find().toArray();
+      res.send(result);
+    });
+
+    // DELETE FEATURED LESSON
+    app.delete("/featured-lessons/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await featuredLessonsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
+    // UPDATE FEATURED LESSON
+    app.patch("/featured-lessons/:id", async (req, res) => {
+      const id = req.params.id;
+      const updateData = req.body;
+      const result = await featuredLessonsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updateData }
+      );
+      res.send(result);
+    });
+
+    // ========  FEATURED LESSONS ------- END ==============================
+
+    // ========= ALL LESSONS ----------- START================================
+    // ADD a public lesson
+    app.post("/add-lesson", async (req, res) => {
+      const addLesson = req.body;
+      const result = await allLessonsCollection.insertOne(addLesson);
+      res.send(result);
+    });
+
+    // DELETE ALL LESSON
+    app.delete("/all-lessons/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await allLessonsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
 
     // Get Single Lesson
     app.get("/all-lessons/:id", async (req, res) => {
@@ -450,24 +464,21 @@ async function run() {
       }
     });
 
-    // ------------ START LESSON DETAILS page relevant apis ------------
+    // ------START LESSON DETAILS page relevant apis ------
 
     //  POST COMMENT
     app.post("/all-lessons/:id/comment", async (req, res) => {
       try {
         const { id } = req.params;
         const payload = req.body;
-
         const newComment = {
           ...payload,
           timestamp: new Date(),
         };
-
         const result = await allLessonsCollection.updateOne(
           { _id: new ObjectId(id) },
           { $push: { comments: newComment } }
         );
-
         res.send({ success: true });
       } catch (error) {
         res.status(500).send({ message: "Failed to post comment", error });
@@ -479,7 +490,6 @@ async function run() {
       const lesson = await allLessonsCollection.findOne({
         _id: new ObjectId(req.params.id),
       });
-
       res.send(lesson?.comments || []);
     });
 
@@ -489,20 +499,15 @@ async function run() {
       const lesson = await allLessonsCollection.findOne({
         _id: new ObjectId(req.params.id),
       });
-
       const likesArray = lesson?.likes || [];
-
       const alreadyLiked = likesArray.includes(email);
-
       const update = alreadyLiked
         ? { $pull: { likes: email } }
         : { $addToSet: { likes: email } };
-
       const result = await allLessonsCollection.updateOne(
         { _id: new ObjectId(req.params.id) },
         update
       );
-
       res.send({ success: true, liked: !alreadyLiked });
     });
 
@@ -510,23 +515,18 @@ async function run() {
     app.patch("/details/favorite/:id", async (req, res) => {
       try {
         const { email } = req.body;
-
         const lesson = await allLessonsCollection.findOne({
           _id: new ObjectId(req.params.id),
         });
-
         const favoriteArray = lesson?.favorites || [];
         const alreadySaved = favoriteArray.includes(email);
-
         const update = alreadySaved
           ? { $pull: { favorites: email } }
           : { $addToSet: { favorites: email } };
-
         await allLessonsCollection.updateOne(
           { _id: new ObjectId(req.params.id) },
           update
         );
-
         res.send({ success: true, saved: !alreadySaved });
       } catch (error) {
         res.status(500).send({ message: "Favorite failed", error });
@@ -534,7 +534,6 @@ async function run() {
     });
 
     // Report Lesson
-
     app.post("/lesson-reports", async (req, res) => {
       const payload = req.body;
       payload.timestamp = new Date();
@@ -542,133 +541,6 @@ async function run() {
       res.send(result);
     });
 
-    // === Repor ted lessons endpoints (safe implementation) ===
-    // Put these inside your run() where collections are defined.
-
-    //  GET grouped reported lessons
-    app.get("/reported-lessons", async (req, res) => {
-      try {
-        // Group reports by lessonId (string) and collect report entries
-        const grouped = await reportsCollection
-          .aggregate([
-            { $sort: { timestamp: -1 } },
-            {
-              $group: {
-                _id: "$lessonId",
-                totalReports: { $sum: 1 },
-                reports: {
-                  $push: {
-                    reporterEmail: "$reporterEmail",
-                    reporterName: "$reporterName",
-                    reason: "$reason",
-                    timestamp: "$timestamp",
-                    _id: "$_id",
-                  },
-                },
-              },
-            },
-          ])
-          .toArray();
-
-        // For each group, attempt to find the lesson (safe conversion)
-        const out = [];
-        for (const g of grouped) {
-          const lessonIdStr = g._id;
-          let lesson = null;
-
-          // Try to find lesson by ObjectId if valid, otherwise try string match
-          if (ObjectId.isValid(lessonIdStr)) {
-            lesson = await allLessonsCollection.findOne({
-              _id: new ObjectId(lessonIdStr),
-            });
-          }
-          // if not found yet, try matching by string field fallback (rare)
-          if (!lesson) {
-            lesson = await allLessonsCollection.findOne({
-              _id: lessonIdStr,
-            });
-          }
-
-          // Build item (if lesson is missing, include minimal info)
-          out.push({
-            lessonId: lesson ? lesson._id.toString() : lessonIdStr,
-            title: lesson ? lesson.title : "(Deleted or missing)",
-            image: lesson ? lesson.image : "",
-            category: lesson ? lesson.category : "",
-            totalReports: g.totalReports,
-            reports: g.reports,
-          });
-        }
-
-        res.status(200).send(out);
-      } catch (err) {
-        console.error("GET /reported-lessons error:", err);
-        res.status(500).send({
-          message: "Failed to fetch reported lessons",
-          error: err.message,
-        });
-      }
-    });
-
-    //  DELETE reports only for a lesson (ignore action)
-    app.delete("/reported-lessons/:lessonId/reports", async (req, res) => {
-      try {
-        const { lessonId } = req.params;
-        const result = await reportsCollection.deleteMany({
-          lessonId: lessonId,
-        });
-        res.status(200).send({ deletedCount: result.deletedCount });
-      } catch (err) {
-        console.error("DELETE /reported-lessons/:lessonId/reports error:", err);
-        res
-          .status(500)
-          .send({ message: "Failed to clear reports", error: err.message });
-      }
-    });
-
-    //  DELETE lesson + its reports (admin delete)
-    app.delete("/reported-lessons/:lessonId/lesson", async (req, res) => {
-      try {
-        const { lessonId } = req.params;
-        let lessonDeleteResult = { deletedCount: 0 };
-
-        if (ObjectId.isValid(lessonId)) {
-          lessonDeleteResult = await allLessonsCollection.deleteOne({
-            _id: new ObjectId(lessonId),
-          });
-        } else {
-          // fallback: try deleting by string field if you stored _id as string (unlikely)
-          lessonDeleteResult = await allLessonsCollection.deleteOne({
-            _id: lessonId,
-          });
-        }
-
-        const reportsDeleteResult = await reportsCollection.deleteMany({
-          lessonId: lessonId,
-        });
-
-        res.status(200).send({
-          lessonDeleted: lessonDeleteResult.deletedCount || 0,
-          reportsDeleted: reportsDeleteResult.deletedCount || 0,
-        });
-      } catch (err) {
-        console.error("DELETE /reported-lessons/:lessonId/lesson error:", err);
-        res.status(500).send({
-          message: "Failed to delete lesson and reports",
-          error: err.message,
-        });
-      }
-    });
-
-    // app.get("/lesson-reports", async (req, res) => {
-    //   const result = await reportsCollection.find().toArray();
-    //   console.log(result)
-    //   res.send(result);
-    // });
-
-    // ================================
-
-    //=================================
     // Get Similar Lessons
     app.get("/similar-lessons/:category/:tone", async (req, res) => {
       const { category, tone } = req.params;
@@ -681,7 +553,7 @@ async function run() {
       res.send(result);
     });
 
-    // ------------ END LESSON DETAILS page relevant apis ------------
+    // ------ END LESSON DETAILS page relevant apis -------
 
     //  GET SINGLE LESSON
     app.get("/update-lesson/:id", async (req, res) => {
@@ -696,7 +568,6 @@ async function run() {
     app.patch("/update-lesson/:id", async (req, res) => {
       const id = req.params.id;
       const updatedLesson = req.body;
-
       const result = await allLessonsCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: updatedLesson }
@@ -704,28 +575,81 @@ async function run() {
       res.send(result);
     });
 
-    // GET user
-    app.get("/users", async (req, res) => {
-      // console.log(" Users API Hit");
-      const cursor = usersCollection.find();
-      const result = await cursor.toArray();
-      res.send(result);
+    // ================ ALL LESSONS ----------- END =========================
+
+    // ========== STRIPE set up -------------- START ============================
+
+    // CREATE CHECKOUT SESSION
+    app.post("/create-checkout-session", async (req, res) => {
+      try {
+        const { email } = req.body;
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+        const session = await stripe.checkout.sessions.create({
+          line_items: [
+            {
+              price_data: {
+                currency: "usd",
+                unit_amount: 1500, // $15
+                product_data: {
+                  name: "SkillSync Premium Lifetime",
+                },
+              },
+              quantity: 1,
+            },
+          ],
+          mode: "payment",
+          //  This is IMPORTANT (used by webhook)
+          metadata: {
+            userEmail: email,
+            plan: "premium",
+          },
+          customer_email: email,
+          //  session_id added like your sample
+          success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+        });
+        res.send({ url: session.url });
+      } catch (error) {
+        console.error("Stripe Error:", error.message);
+        res.status(500).send({ message: error.message });
+      }
     });
 
-    // GET a user's role
-    app.get("/users/:email/role", async (req, res) => {
-      const email = req.params.email;
-      const user = await usersCollection.findOne({ email });
+    //  STRIPE WEBHOOK
+    app.post(
+      "/webhook",
+      express.raw({ type: "application/json" }),
+      async (req, res) => {
+        const sig = req.headers["stripe-signature"];
+        let event;
+        try {
+          event = stripe.webhooks.constructEvent(
+            req.body,
+            sig,
+            process.env.STRIPE_WEBHOOK_SECRET
+          );
+        } catch (err) {
+          // console.error("Webhook signature error:", err.message);
+          return res.status(400).send(`Webhook Error: ${err.message}`);
+        }
+        if (event.type === "checkout.session.completed") {
+          const session = event.data.object;
+          const userEmail =
+            session.metadata?.userEmail || session.customer_email;
+          // console.log("Payment Success for:", userEmail);
+          const result = await usersCollection.updateOne(
+            { email: userEmail },
+            { $set: { isPremium: true } }
+          );
+          // console.log(" MongoDB Update Result:", result.modifiedCount);
+        }
+        res.json({ received: true });
+      }
+    );
+    // ========= STRIPE set up ------------- END =============================
 
-      res.send({
-        role: user?.role || "user",
-        isPremium: user?.isPremium || false,
-      });
-    });
-
-    // ===========================
-
-    // ==========================
     // ADMIN — Manage Users APIs
     // ==========================
 
