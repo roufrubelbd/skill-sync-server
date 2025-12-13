@@ -1,9 +1,10 @@
+require("dotenv").config();
+console.log("STRIPE_SECRET_KEY:", process.env.STRIPE_SECRET_KEY); 
 const { ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const express = require("express");
 const app = express();
 const { MongoClient, ServerApiVersion } = require("mongodb");
-require("dotenv").config();
 const cors = require("cors");
 
 const port = process.env.PORT || 5000;
