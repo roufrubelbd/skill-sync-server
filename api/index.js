@@ -8,39 +8,56 @@ const { MongoClient, ServerApiVersion } = require("mongodb");
 const cors = require("cors");
 const admin = require("firebase-admin");
 
-// ====== Initialize Firebase Admin SDK with ENV vars (no file) ========
-const serviceAccount = {
-  type: process.env.FIREBASE_TYPE,
-  project_id: process.env.FIREBASE_PROJECT_ID,
-  private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-  private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"), // Handle newlines
-  client_email: process.env.FIREBASE_CLIENT_EMAIL,
-  client_id: process.env.FIREBASE_CLIENT_ID,
-  auth_uri: process.env.FIREBASE_AUTH_URI,
-  token_uri: process.env.FIREBASE_TOKEN_URI,
-  auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
-  client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
-  universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
-};
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-
 const port = process.env.PORT || 5000;
 const uri = process.env.MONGODB_URI;
 
+// ====== Initialize Firebase Admin SDK with ENV vars (no file) ========
+// const serviceAccount = {
+//   type: process.env.FIREBASE_TYPE,
+//   project_id: process.env.FIREBASE_PROJECT_ID,
+//   private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+//   private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"), // Handle newlines
+//   client_email: process.env.FIREBASE_CLIENT_EMAIL,
+//   client_id: process.env.FIREBASE_CLIENT_ID,
+//   auth_uri: process.env.FIREBASE_AUTH_URI,
+//   token_uri: process.env.FIREBASE_TOKEN_URI,
+//   auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+//   client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
+//   universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
+// };
+
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount),
+// });
+
+// // middleware
+// app.use(
+//   cors({
+//     origin: [
+//       "http://localhost:5173",
+//       process.env.CLIENT_URL,
+//     ],
+//     credentials: true,
+//   })
+// );
+
+//=====================test 
+const decoded = Buffer.from(process.env.FIREBASE_PRIVATE_KEY, 'base64').toString(
+  'utf-8'
+)
+const serviceAccount = JSON.parse(decoded)
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+})
 // middleware
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://skill-sync-server-liart.vercel.app",
-      process.env.CLIENT_URL,
-    ],
+    origin: [process.env.CLIENT_DOMAIN],
     credentials: true,
+    optionSuccessStatus: 200,
   })
-);
+)
+//=====================test 
 
 app.use((req, res, next) => {
   if (req.originalUrl === "/webhook") {
