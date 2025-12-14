@@ -20,7 +20,10 @@ const uri = process.env.MONGODB_URI;
 // app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
 app.use(
   cors({
-    origin: ["http://localhost:5173", process.env.CLIENT_URL],
+    origin: [
+      "http://localhost:5173",
+      process.env.CLIENT_URL,
+    ],
     credentials: true,
   })
 );
@@ -64,13 +67,7 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
-// Admin Middleware
-const isAdmin = (req, res, next) => {
-  if (req.user.role !== "admin") {
-    return res.status(403).send({ message: "Admin access required" });
-  }
-  next();
-};
+
 // ======= Token Verification Middleware ----------- END =========================
 
 // ======== MONGODB Connections ===================================
@@ -94,6 +91,24 @@ async function run() {
     const reportsCollection = database.collection("reports");
 
     // ======== DATABASE --------- END ==================================
+
+    // =========== Admin Middleware ============
+const isAdmin = (req, res, next) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).send({ message: "Admin access required" });
+  }
+  next();
+};
+
+//  const verifyAdmin = async (req, res, next) => {
+//     const email = req.user.email;
+//     const user = await usersCollection.findOne({ email });
+//     if (user?.role !== "admin") {
+//       return res.status(403).send({ message: "Forbidden" });
+//     }
+//     next();
+//   };
+
 
     // ========  USER API ---------- START ==== ===============================
 
@@ -840,6 +855,14 @@ run().catch(console.dir);
 
 app.get("/", (req, res) => {
   res.send("Hello World!");
+});
+
+app.use((err, req, res, next) => {
+  console.error("SERVER ERROR:", err);
+  res.status(500).send({
+    message: "Internal server error",
+    error: err.message,
+  });
 });
 
 app.listen(port, () => {
