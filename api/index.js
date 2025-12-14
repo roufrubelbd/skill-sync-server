@@ -9,18 +9,26 @@ const cors = require("cors");
 const admin = require("firebase-admin");
 
 // ====== Initialize Firebase Admin SDK ========
+// admin.initializeApp({
+//   credential: admin.credential.cert(require("./serviceAccount.json")),
+// });
+
 admin.initializeApp({
-  credential: admin.credential.cert(require("./serviceAccount.json")),
+  credential: admin.credential.cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+  }),
 });
 
-const port = process.env.PORT || 5000;
+// const port = process.env.PORT || 5000;
 const uri = process.env.MONGODB_URI;
 
 //  middleware
 // app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
 app.use(
   cors({
-    origin: ["http://localhost:5173", process.env.CLIENT_URL],
+    origin: ["http://localhost:5173", "https://skill-sync-learning.web.app"],
     credentials: true,
   })
 );
@@ -36,19 +44,35 @@ app.use((req, res, next) => {
 });
 
 // ======== MONGODB Connections ===================================
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
+// const client = new MongoClient(uri, {
+//   serverApi: {
+//     version: ServerApiVersion.v1,
+//     strict: true,
+//     deprecationErrors: true,
+//   },
+// });
+
+let client;
+async function connectDB() {
+  if (!client) {
+    client = new MongoClient(process.env.MONGODB_URI, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      },
+    });
+    await client.connect();
+  }
+  return client;
+}
+
 async function run() {
   try {
     // await client.connect();
 
     // ======== DATABASE --------- START ==================================
-
+    const client = await connectDB();
     const database = client.db("skillSync");
     const allLessonsCollection = database.collection("allLessons");
     const featuredLessonsCollection = database.collection("featuredLessons");
@@ -572,7 +596,7 @@ async function run() {
     });
 
     // GET public lessons
-    app.get("/all-lessons", verifyToken, async (req, res) => {
+    app.get("/all-lessons", async (req, res) => {
       const cursor = allLessonsCollection.find();
       const result = await cursor.toArray();
       res.send(result);
@@ -859,6 +883,8 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`Example app listening on port ${port}`);
+// });
+
+module.exports = app;
