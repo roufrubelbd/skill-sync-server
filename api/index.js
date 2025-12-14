@@ -20,10 +20,7 @@ const uri = process.env.MONGODB_URI;
 // app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      process.env.CLIENT_URL,
-    ],
+    origin: ["http://localhost:5173", process.env.CLIENT_URL],
     credentials: true,
   })
 );
@@ -37,38 +34,6 @@ app.use((req, res, next) => {
     express.json()(req, res, next);
   }
 });
-
-// ======= Token Verification Middleware ----------- START =========================
-const verifyToken = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).send({ message: "No token provided" });
-  }
-
-  const token = authHeader.split(" ")[1];
-
-  try {
-    const decoded = await admin.auth().verifyIdToken(token);
-    const database = client.db("skillSync");
-    const usersCollection = database.collection("users");
-    const dbUser = await usersCollection.findOne({ email: decoded.email });
-    if (!dbUser) {
-      return res.status(401).send({ message: "User not found in database" });
-    }
-    req.user = {
-      email: decoded.email,
-      role: dbUser.role || "user",
-      isPremium: dbUser.isPremium || false,
-    };
-    next();
-  } catch (err) {
-    console.error("Token verification error:", err);
-    res.status(401).send({ message: "Invalid or expired token" });
-  }
-};
-
-
-// ======= Token Verification Middleware ----------- END =========================
 
 // ======== MONGODB Connections ===================================
 const client = new MongoClient(uri, {
@@ -92,23 +57,52 @@ async function run() {
 
     // ======== DATABASE --------- END ==================================
 
+    // ======= Token Verification Middleware ----------- START ======================
+    const verifyToken = async (req, res, next) => {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).send({ message: "No token provided" });
+      }
+
+      const token = authHeader.split(" ")[1];
+
+      try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        const dbUser = await usersCollection.findOne({ email: decoded.email });
+        if (!dbUser) {
+          return res
+            .status(401)
+            .send({ message: "User not found in database" });
+        }
+        req.user = {
+          email: decoded.email,
+          role: dbUser.role || "user",
+          isPremium: dbUser.isPremium || false,
+        };
+        next();
+      } catch (err) {
+        console.error("Token verification error:", err);
+        res.status(401).send({ message: "Invalid or expired token" });
+      }
+    };
+    // ======= Token Verification Middleware ----------- END ======================
+
     // =========== Admin Middleware ============
-const isAdmin = (req, res, next) => {
-  if (req.user.role !== "admin") {
-    return res.status(403).send({ message: "Admin access required" });
-  }
-  next();
-};
+    // const isAdmin = (req, res, next) => {
+    //   if (req.user.role !== "admin") {
+    //     return res.status(403).send({ message: "Admin access required" });
+    //   }
+    //   next();
+    // };
 
-//  const verifyAdmin = async (req, res, next) => {
-//     const email = req.user.email;
-//     const user = await usersCollection.findOne({ email });
-//     if (user?.role !== "admin") {
-//       return res.status(403).send({ message: "Forbidden" });
-//     }
-//     next();
-//   };
-
+    const isAdmin = async (req, res, next) => {
+      const email = req.user.email;
+      const user = await usersCollection.findOne({ email });
+      if (user?.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden" });
+      }
+      next();
+    };
 
     // ========  USER API ---------- START ==== ===============================
 
