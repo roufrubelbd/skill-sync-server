@@ -264,7 +264,7 @@ async function run() {
 
     //-------------- ADMIN OTHERS DATA -------------------------->>
     // ---- GET TOP CONTRIBUTORS ------
-    app.get("/top-contributors", verifyToken, isAdmin, async (req, res) => {
+    app.get("/top-contributors",  async (req, res) => {
       const oneWeekAgo = new Date();
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
       const contributors = await allLessonsCollection
@@ -288,7 +288,7 @@ async function run() {
     });
 
     // GET MOST SAVED LESSONS
-    app.get("/most-saved-lessons", verifyToken, isAdmin, async (req, res) => {
+    app.get("/most-saved-lessons",  async (req, res) => {
       const lessons = await allLessonsCollection
         .aggregate([
           {
