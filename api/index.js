@@ -1,11 +1,17 @@
 require("dotenv").config();
-console.log("STRIPE_SECRET_KEY:", process.env.STRIPE_SECRET_KEY); 
+// console.log("STRIPE_SECRET_KEY:", process.env.STRIPE_SECRET_KEY);
 const { ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const express = require("express");
 const app = express();
 const { MongoClient, ServerApiVersion } = require("mongodb");
 const cors = require("cors");
+const admin = require("firebase-admin");
+
+// ====== Initialize Firebase Admin SDK ========
+admin.initializeApp({
+  credential: admin.credential.cert(require("./serviceAccount.json")),
+});
 
 const port = process.env.PORT || 5000;
 const uri = process.env.MONGODB_URI;
@@ -28,6 +34,44 @@ app.use((req, res, next) => {
     express.json()(req, res, next);
   }
 });
+
+// ======= Token Verification Middleware ----------- START =========================
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).send({ message: "No token provided" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    const database = client.db("skillSync");
+    const usersCollection = database.collection("users");
+    const dbUser = await usersCollection.findOne({ email: decoded.email });
+    if (!dbUser) {
+      return res.status(401).send({ message: "User not found in database" });
+    }
+    req.user = {
+      email: decoded.email,
+      role: dbUser.role || "user",
+      isPremium: dbUser.isPremium || false,
+    };
+    next();
+  } catch (err) {
+    console.error("Token verification error:", err);
+    res.status(401).send({ message: "Invalid or expired token" });
+  }
+};
+
+// Admin Middleware
+const isAdmin = (req, res, next) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).send({ message: "Admin access required" });
+  }
+  next();
+};
+// ======= Token Verification Middleware ----------- END =========================
 
 // ======== MONGODB Connections ===================================
 const client = new MongoClient(uri, {
@@ -66,16 +110,8 @@ async function run() {
       res.send(result);
     });
 
-    // GET user
-    app.get("/users", async (req, res) => {
-      // console.log(" Users API Hit");
-      const cursor = usersCollection.find();
-      const result = await cursor.toArray();
-      res.send(result);
-    });
-
     // GET a user's role
-    app.get("/users/:email/role", async (req, res) => {
+    app.get("/users/:email/role", verifyToken, async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
       res.send({
@@ -84,11 +120,42 @@ async function run() {
       });
     });
 
+    // UPDATE USER PROFILE (name and photo)
+    app.patch("/users/:email", verifyToken, async (req, res) => {
+      const email = req.params.email;
+      if (email !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden" });
+      }
+      const { name, photoURL } = req.body;
+      if (!name && !photoURL) {
+        return res.status(400).send({ message: "No update data provided" });
+      }
+      const updateData = {};
+      if (name) updateData.name = name;
+      if (photoURL) updateData.photoURL = photoURL;
+      const result = await usersCollection.updateOne(
+        { email },
+        { $set: updateData }
+      );
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: "User not found" });
+      }
+      res.send(result);
+    });
+
+    // GET users
+    app.get("/users", verifyToken, async (req, res) => {
+      // console.log(" Users API Hit");
+      const cursor = usersCollection.find();
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
     // ========== USER API ------------ END ================================
 
-    //  ADMIN ANALYTICS ------------- START ==================================
+    // ====== ADMIN ANALYTICS --- (protect with verifyToken and isAdmin) ------ START ======
 
-    app.get("/admin/analytics", async (req, res) => {
+    app.get("/admin/analytics", verifyToken, isAdmin, async (req, res) => {
       try {
         // total users
         const totalUsers = await usersCollection.countDocuments();
@@ -182,7 +249,7 @@ async function run() {
 
     //-------------- ADMIN OTHERS DATA -------------------------->>
     // ---- GET TOP CONTRIBUTORS ------
-    app.get("/top-contributors", async (req, res) => {
+    app.get("/top-contributors", verifyToken, isAdmin, async (req, res) => {
       const oneWeekAgo = new Date();
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
       const contributors = await allLessonsCollection
@@ -206,7 +273,7 @@ async function run() {
     });
 
     // GET MOST SAVED LESSONS
-    app.get("/most-saved-lessons", async (req, res) => {
+    app.get("/most-saved-lessons", verifyToken, isAdmin, async (req, res) => {
       const lessons = await allLessonsCollection
         .aggregate([
           {
@@ -222,7 +289,7 @@ async function run() {
     });
 
     //  GET grouped reported lessons
-    app.get("/reported-lessons", async (req, res) => {
+    app.get("/reported-lessons", verifyToken, isAdmin, async (req, res) => {
       try {
         // Group reports by lessonId (string) and collect report entries
         const grouped = await reportsCollection
@@ -245,13 +312,11 @@ async function run() {
             },
           ])
           .toArray();
-
         // For each group, attempt to find the lesson (safe conversion)
         const out = [];
         for (const g of grouped) {
           const lessonIdStr = g._id;
           let lesson = null;
-
           // Try to find lesson by ObjectId if valid, otherwise try string match
           if (ObjectId.isValid(lessonIdStr)) {
             lesson = await allLessonsCollection.findOne({
@@ -264,7 +329,6 @@ async function run() {
               _id: lessonIdStr,
             });
           }
-
           // Build item (if lesson is missing, include minimal info)
           out.push({
             lessonId: lesson ? lesson._id.toString() : lessonIdStr,
@@ -275,7 +339,6 @@ async function run() {
             reports: g.reports,
           });
         }
-
         res.status(200).send(out);
       } catch (err) {
         console.error("GET /reported-lessons error:", err);
@@ -287,57 +350,73 @@ async function run() {
     });
 
     //  DELETE reports only for a lesson by admin delete/ ignore
-    app.delete("/reported-lessons/:lessonId/reports", async (req, res) => {
-      try {
-        const { lessonId } = req.params;
-        const result = await reportsCollection.deleteMany({
-          lessonId: lessonId,
-        });
-        res.status(200).send({ deletedCount: result.deletedCount });
-      } catch (err) {
-        console.error("DELETE /reported-lessons/:lessonId/reports error:", err);
-        res
-          .status(500)
-          .send({ message: "Failed to clear reports", error: err.message });
+    app.delete(
+      "/reported-lessons/:lessonId/reports",
+      verifyToken,
+      isAdmin,
+      async (req, res) => {
+        try {
+          const { lessonId } = req.params;
+          const result = await reportsCollection.deleteMany({
+            lessonId: lessonId,
+          });
+          res.status(200).send({ deletedCount: result.deletedCount });
+        } catch (err) {
+          console.error(
+            "DELETE /reported-lessons/:lessonId/reports error:",
+            err
+          );
+          res
+            .status(500)
+            .send({ message: "Failed to clear reports", error: err.message });
+        }
       }
-    });
+    );
 
     //  DELETE lesson + its reports by admin delete
-    app.delete("/reported-lessons/:lessonId/lesson", async (req, res) => {
-      try {
-        const { lessonId } = req.params;
-        let lessonDeleteResult = { deletedCount: 0 };
+    app.delete(
+      "/reported-lessons/:lessonId/lesson",
+      verifyToken,
+      isAdmin,
+      async (req, res) => {
+        try {
+          const { lessonId } = req.params;
+          let lessonDeleteResult = { deletedCount: 0 };
 
-        if (ObjectId.isValid(lessonId)) {
-          lessonDeleteResult = await allLessonsCollection.deleteOne({
-            _id: new ObjectId(lessonId),
+          if (ObjectId.isValid(lessonId)) {
+            lessonDeleteResult = await allLessonsCollection.deleteOne({
+              _id: new ObjectId(lessonId),
+            });
+          } else {
+            // fallback: try deleting by string field if you stored _id as string (unlikely)
+            lessonDeleteResult = await allLessonsCollection.deleteOne({
+              _id: lessonId,
+            });
+          }
+          const reportsDeleteResult = await reportsCollection.deleteMany({
+            lessonId: lessonId,
           });
-        } else {
-          // fallback: try deleting by string field if you stored _id as string (unlikely)
-          lessonDeleteResult = await allLessonsCollection.deleteOne({
-            _id: lessonId,
+          res.status(200).send({
+            lessonDeleted: lessonDeleteResult.deletedCount || 0,
+            reportsDeleted: reportsDeleteResult.deletedCount || 0,
+          });
+        } catch (err) {
+          console.error(
+            "DELETE /reported-lessons/:lessonId/lesson error:",
+            err
+          );
+          res.status(500).send({
+            message: "Failed to delete lesson and reports",
+            error: err.message,
           });
         }
-        const reportsDeleteResult = await reportsCollection.deleteMany({
-          lessonId: lessonId,
-        });
-        res.status(200).send({
-          lessonDeleted: lessonDeleteResult.deletedCount || 0,
-          reportsDeleted: reportsDeleteResult.deletedCount || 0,
-        });
-      } catch (err) {
-        console.error("DELETE /reported-lessons/:lessonId/lesson error:", err);
-        res.status(500).send({
-          message: "Failed to delete lesson and reports",
-          error: err.message,
-        });
       }
-    });
+    );
 
     // ADMIN — Manage Users APIs -------
 
     // Search users
-    app.get("/admin/search-users", async (req, res) => {
+    app.get("/admin/search-users", verifyToken, isAdmin, async (req, res) => {
       const q = req.query.q || "";
       const users = await usersCollection
         .find({
@@ -351,37 +430,52 @@ async function run() {
     });
 
     // Promote user to admin
-    app.patch("/admin/users/:email/role", async (req, res) => {
-      const email = req.params.email;
-      const result = await usersCollection.updateOne(
-        { email },
-        { $set: { role: "admin" } }
-      );
-      res.send(result);
-    });
+    app.patch(
+      "/admin/users/:email/role",
+      verifyToken,
+      isAdmin,
+      async (req, res) => {
+        const email = req.params.email;
+        const result = await usersCollection.updateOne(
+          { email },
+          { $set: { role: "admin" } }
+        );
+        res.send(result);
+      }
+    );
 
     // Delete user
-    app.delete("/admin/users/:email", async (req, res) => {
-      const email = req.params.email;
-      const result = await usersCollection.deleteOne({ email });
-      res.send(result);
-    });
+    app.delete(
+      "/admin/users/:email",
+      verifyToken,
+      isAdmin,
+      async (req, res) => {
+        const email = req.params.email;
+        const result = await usersCollection.deleteOne({ email });
+        res.send(result);
+      }
+    );
 
     // PATCH: Mark lesson reviewed or unreviewed
-    app.patch("/all-lessons/review/:id", async (req, res) => {
-      const { reviewed } = req.body;
-      const result = await allLessonsCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: { reviewed } }
-      );
-      res.send(result);
-    });
+    app.patch(
+      "/all-lessons/review/:id",
+      verifyToken,
+      isAdmin,
+      async (req, res) => {
+        const { reviewed } = req.body;
+        const result = await allLessonsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { reviewed } }
+        );
+        res.send(result);
+      }
+    );
 
     // =========== ADMIN ANALYTICS ---------- END =======================
 
     // ======= FEATURED LESSONS --------- START ===========================
     // ADD TO FEATURED
-    app.post("/featured-lessons", async (req, res) => {
+    app.post("/featured-lessons", verifyToken, isAdmin, async (req, res) => {
       const payload = req.body;
       // prevent duplicates
       const exists = await featuredLessonsCollection.findOne({
@@ -401,37 +495,47 @@ async function run() {
     });
 
     // DELETE FEATURED LESSON
-    app.delete("/featured-lessons/:id", async (req, res) => {
-      const id = req.params.id;
-      const result = await featuredLessonsCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
-      res.send(result);
-    });
+    app.delete(
+      "/featured-lessons/:id",
+      verifyToken,
+      isAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const result = await featuredLessonsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        res.send(result);
+      }
+    );
 
     // UPDATE FEATURED LESSON
-    app.patch("/featured-lessons/:id", async (req, res) => {
-      const id = req.params.id;
-      const updateData = req.body;
-      const result = await featuredLessonsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updateData }
-      );
-      res.send(result);
-    });
+    app.patch(
+      "/featured-lessons/:id",
+      verifyToken,
+      isAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const updateData = req.body;
+        const result = await featuredLessonsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+        res.send(result);
+      }
+    );
 
     // ========  FEATURED LESSONS ------- END ==============================
 
     // ========= ALL LESSONS ----------- START================================
     // ADD a public lesson
-    app.post("/add-lesson", async (req, res) => {
+    app.post("/add-lesson", verifyToken, async (req, res) => {
       const addLesson = req.body;
       const result = await allLessonsCollection.insertOne(addLesson);
       res.send(result);
     });
 
     // DELETE ALL LESSON
-    app.delete("/all-lessons/:id", async (req, res) => {
+    app.delete("/all-lessons/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       const result = await allLessonsCollection.deleteOne({
         _id: new ObjectId(id),
@@ -440,7 +544,7 @@ async function run() {
     });
 
     // Get Single Lesson
-    app.get("/all-lessons/:id", async (req, res) => {
+    app.get("/all-lessons/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         if (!ObjectId.isValid(id)) {
@@ -459,14 +563,14 @@ async function run() {
     });
 
     // GET public lessons
-    app.get("/all-lessons", async (req, res) => {
+    app.get("/all-lessons", verifyToken, async (req, res) => {
       const cursor = allLessonsCollection.find();
       const result = await cursor.toArray();
       res.send(result);
     });
 
     // ------------ GET public lessons ---------------
-    app.get("/public-lessons/:id", async (req, res) => {
+    app.get("/public-lessons/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
         if (!ObjectId.isValid(id)) {
@@ -485,7 +589,7 @@ async function run() {
     });
 
     // GET my lessons
-    app.get("/my-lessons", async (req, res) => {
+    app.get("/my-lessons", verifyToken, async (req, res) => {
       const email = req.query.email;
       if (!email) return res.status(400).send("Email is required");
       const cursor = allLessonsCollection
@@ -511,7 +615,7 @@ async function run() {
     // ------START LESSON DETAILS page relevant apis ------
 
     //  POST COMMENT
-    app.post("/all-lessons/:id/comment", async (req, res) => {
+    app.post("/all-lessons/:id/comment", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
         const payload = req.body;
@@ -530,7 +634,7 @@ async function run() {
     });
 
     //  GET COMMENTS
-    app.get("/all-lessons/:id/comments", async (req, res) => {
+    app.get("/all-lessons/:id/comments", verifyToken, async (req, res) => {
       const lesson = await allLessonsCollection.findOne({
         _id: new ObjectId(req.params.id),
       });
@@ -538,7 +642,7 @@ async function run() {
     });
 
     // Toggle Like
-    app.patch("/details/like/:id", async (req, res) => {
+    app.patch("/details/like/:id", verifyToken, async (req, res) => {
       const { email } = req.body;
       const lesson = await allLessonsCollection.findOne({
         _id: new ObjectId(req.params.id),
@@ -556,7 +660,7 @@ async function run() {
     });
 
     //  TOGGLE FAVORITE
-    app.patch("/details/favorite/:id", async (req, res) => {
+    app.patch("/details/favorite/:id", verifyToken, async (req, res) => {
       try {
         const { email } = req.body;
         const lesson = await allLessonsCollection.findOne({
@@ -578,7 +682,7 @@ async function run() {
     });
 
     // Report Lesson
-    app.post("/lesson-reports", async (req, res) => {
+    app.post("/lesson-reports", verifyToken, async (req, res) => {
       const payload = req.body;
       payload.timestamp = new Date();
       const result = await reportsCollection.insertOne(payload);
@@ -586,21 +690,25 @@ async function run() {
     });
 
     // Get Similar Lessons
-    app.get("/similar-lessons/:category/:tone", async (req, res) => {
-      const { category, tone } = req.params;
-      const result = await allLessonsCollection
-        .find({
-          $or: [{ category }, { tone }],
-        })
-        .limit(6)
-        .toArray();
-      res.send(result);
-    });
+    app.get(
+      "/similar-lessons/:category/:tone",
+      verifyToken,
+      async (req, res) => {
+        const { category, tone } = req.params;
+        const result = await allLessonsCollection
+          .find({
+            $or: [{ category }, { tone }],
+          })
+          .limit(6)
+          .toArray();
+        res.send(result);
+      }
+    );
 
     // ------ END LESSON DETAILS page relevant apis -------
 
     //  GET SINGLE LESSON
-    app.get("/update-lesson/:id", async (req, res) => {
+    app.get("/update-lesson/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       const result = await allLessonsCollection.findOne({
         _id: new ObjectId(id),
@@ -609,7 +717,7 @@ async function run() {
     });
 
     //  UPDATE LESSON
-    app.patch("/update-lesson/:id", async (req, res) => {
+    app.patch("/update-lesson/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
       const updatedLesson = req.body;
       const result = await allLessonsCollection.updateOne(
@@ -620,7 +728,7 @@ async function run() {
     });
 
     // PATCH: public to private || private to public
-    app.patch("/all-lessons/private/:id", async (req, res) => {
+    app.patch("/all-lessons/private/:id", verifyToken, async (req, res) => {
       const { visibility } = req.body;
       const result = await allLessonsCollection.updateOne(
         { _id: new ObjectId(req.params.id) },
@@ -630,7 +738,7 @@ async function run() {
     });
 
     // PATCH: free to premium || private to public
-    app.patch("/all-lessons/premium/:id", async (req, res) => {
+    app.patch("/all-lessons/premium/:id", verifyToken, async (req, res) => {
       const { accessLevel } = req.body;
       const result = await allLessonsCollection.updateOne(
         { _id: new ObjectId(req.params.id) },
@@ -644,7 +752,7 @@ async function run() {
     // ========== STRIPE set up -------------- START ============================
 
     // CREATE CHECKOUT SESSION
-    app.post("/create-checkout-session", async (req, res) => {
+    app.post("/create-checkout-session", verifyToken, async (req, res) => {
       try {
         const { email } = req.body;
         if (!email) {
@@ -672,7 +780,8 @@ async function run() {
           customer_email: email,
           //  session_id added like your sample
           success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+          // cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+          cancel_url: `${process.env.CLIENT_URL}/payment/cancel?reason=cancelled`,
         });
         res.send({ url: session.url });
       } catch (error) {
